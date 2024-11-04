@@ -7,6 +7,7 @@
 git clone git@github.com:amyxlu/progen-speculative-decoding.git
 cd progen-speculative-decoding
 pip install -e .
+pip install -r requirements.txt   # modified to be more compatible w/ more recent package versions
 ```
 
 To download checkpoints (note: use `sfr-progen-research` instead of `anon-progen-research`, otherwise the bucket will not exist.)
