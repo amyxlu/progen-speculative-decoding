@@ -18,10 +18,18 @@ tar -xvf checkpoints/${model}/${model}.tar.gz -C checkpoints/${model}/
 
 Repeat for `model=progen2-xlarge`.
 
+## Basic Generation
+```
+cd progen-speculative-decoding
+python sample.py --model progen2-xlarge --num-samples 8 --max-length 512
+```
+
+## Sampling with Speculative Decoding
+
+TODO
 
 
-
-# ProGen2
+# ProGen2 -- Original README
 Official release of the **ProGen2** models (`151M`, `764M`, `2.7B`, `6.4B`) for **Protein Engineering**.
 
 ## Models
