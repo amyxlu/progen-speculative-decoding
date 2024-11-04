@@ -1,3 +1,26 @@
+# Speculative Decoding for ProGen2
+
+
+## Install
+
+```
+git clone git@github.com:amyxlu/progen-speculative-decoding.git
+cd progen-speculative-decoding
+pip install -e .
+```
+
+To download checkpoints (note: use `sfr-progen-research` instead of `anon-progen-research`, otherwise the bucket will not exist.)
+```
+model=progen2-small
+wget -P checkpoints/${model} https://storage.googleapis.com/sfr-progen-research/checkpoints/${model}.tar.gz
+tar -xvf checkpoints/${model}/${model}.tar.gz -C checkpoints/${model}/
+```
+
+Repeat for `model=progen2-xlarge`.
+
+
+
+
 # ProGen2
 Official release of the **ProGen2** models (`151M`, `764M`, `2.7B`, `6.4B`) for **Protein Engineering**.
 

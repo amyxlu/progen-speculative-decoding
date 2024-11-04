@@ -1,4 +1,14 @@
-**/__pycache__
-**/.venv
-**/.vscode
 **/checkpoints
+venv*
+__pycache__
+.ipynb_checkpoints
+*.egg-info
+*_demo_*.png
+*/wandb/*
+*.csv
+.env
+*.vscode
+*.out
+*outputs
+*.hydra
+*.log
