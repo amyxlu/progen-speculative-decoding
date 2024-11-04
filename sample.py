@@ -3,97 +3,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # For full license text, see the LICENSE file in the repo root or https://opensource.org/licenses/BSD-3-Clause
 
-import os
-import time
-import random
-import argparse
 
+import argparse
 import torch
 
-from tokenizers import Tokenizer
-from progen.modeling_progen import ProGenForCausalLM
-
-
-
-########################################################################
-# util
-
-
-class print_time:
-    def __init__(self, desc):
-        self.desc = desc
-
-    def __enter__(self):
-        print(self.desc)
-        self.t = time.time()
-
-    def __exit__(self, type, value, traceback):
-        print(f'{self.desc} took {time.time()-self.t:.02f}s')
-
-
-def set_env():
-    os.environ['TOKENIZERS_PARALLELISM'] = 'false'
-
-
-def set_seed(seed, deterministic=True):
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.backends.cudnn.deterministic = deterministic
-        torch.backends.cudnn.benchmark = not deterministic
-
-
-
-########################################################################
-# model
-
-
-def create_model(ckpt, fp16=True):
-    if fp16:
-        return ProGenForCausalLM.from_pretrained(ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True)
-    else:
-        return ProGenForCausalLM.from_pretrained(ckpt)
-
-
-def create_tokenizer_custom(file):
-    with open(file, 'r') as f:
-        return Tokenizer.from_str(f.read())
-
-
-########################################################################
-# sample
-
-
-def sample(device, model, tokenizer, context, max_length, num_return_sequences, top_p, temp, pad_token_id):
-
-    with torch.no_grad():
-        input_ids = torch.tensor(tokenizer.encode(context).ids).view([1, -1]).to(device)
-        tokens_batch = model.generate(input_ids, do_sample=True, temperature=temp, max_length=max_length, top_p=top_p, num_return_sequences=num_return_sequences, pad_token_id=pad_token_id)
-        as_lists = lambda batch: [batch[i, ...].detach().cpu().numpy().tolist() for i in range(batch.shape[0])]
-        return tokenizer.decode_batch(as_lists(tokens_batch))
-
-
-def truncate(sample, terminals):
-    pos = []
-    for terminal in terminals:
-        find_pos = sample.find(terminal, 1)
-        if find_pos != -1:
-            pos.append(find_pos)
-    if len(pos) > 0:
-        return sample[:(min(pos)+1)]
-    else:
-        return sample
-
-
-def cross_entropy(logits, target, reduction='mean'):
-    return torch.nn.functional.cross_entropy(input=logits, target=target, weight=None, size_average=None, reduce=None, reduction=reduction)
-
-
-
-########################################################################
-# main
+from progen.sampling import sample, cross_entropy, truncate
+from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time
 
 
 def main():
