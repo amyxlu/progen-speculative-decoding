@@ -10,7 +10,7 @@ import torch
 
 
 def sample(device, model, tokenizer, context, max_length, num_return_sequences, top_p, temp, pad_token_id):
-
+    """ Original ProGen top-p sampling."""
     with torch.no_grad():
         input_ids = torch.tensor(tokenizer.encode(context).ids).view([1, -1]).to(device)
         tokens_batch = model.generate(input_ids, do_sample=True, temperature=temp, max_length=max_length, top_p=top_p, num_return_sequences=num_return_sequences, pad_token_id=pad_token_id)
