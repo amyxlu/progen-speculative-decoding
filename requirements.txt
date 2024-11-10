@@ -5,3 +5,4 @@ tokenizers #==0.10.3
 accelerate
 einops
 termcolor # for fun viz during printing
+vllm
