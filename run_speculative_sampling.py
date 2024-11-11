@@ -5,12 +5,14 @@
 
 
 import argparse
+import time
 import torch
 
 from progen.sampling import sample, cross_entropy, truncate
 from progen.speculative import speculative_generate
 from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time, GreedyProcessor, LogitsProcessor
 import progen.printing_utils as printing
+from termcolor import colored
 
 
 def main():
@@ -81,14 +83,15 @@ def main():
     bos_tok = tokenizer.token_to_id("<|bos|>")
     pad_tok = tokenizer.token_to_id("<|pad|>")
 
+    spec_start_time = time.time()
     ids, accept_rate = speculative_generate(
-        inputs = inputs, #TODO
+        inputs = inputs,
         drafter = draft_model,
         target = target_model,
         tokenizer = tokenizer,
         gamma = 5,
         logits_processor = GreedyProcessor(),
-        max_gen_len = 40,
+        max_gen_len = args.max_length,
         eos_tokens_id = eos_tok,
         pad_token_id = pad_tok,
         use_cache = False,
@@ -96,7 +99,18 @@ def main():
         first_target = True, 
         debug = False,
     )
-        
+    
+    spec_end_time = time.time()
+    spec_output = tokenizer.decode(ids, skip_special_tokens=True)
+
+    print(colored("========== Speculative ==========", "green"))
+    print(colored("Out:", "green"), spec_output)
+    print(colored(f"Acceptance rate: {accept_rate:.3f}", "green"))
+
+    spec_throughput = len(spec_output) / (spec_end_time - spec_start_time)
+    print(colored(f"Time: {spec_end_time - spec_start_time:.1f}s", "green"))
+    print(colored(f"Throughput: {spec_throughput:.1f} tokens/s", "green"))
+    print(colored("========== Speculative ==========", "green")) 
      
 
 if __name__ == '__main__':
