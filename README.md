@@ -21,14 +21,17 @@ Repeat for `model=progen2-xlarge`.
 
 ## Basic Generation
 ```
-cd progen-speculative-decoding
-python sample.py --model progen2-xlarge --num-samples 8 --max-length 512
+python sample.py --model progen2-xlarge --num-samples 1 --max-length 512
 ```
 
 ## Sampling with Speculative Decoding
-
-TODO
-
+```
+python run_speculative_sampling.py \
+  --draft_model progen2-small \
+  --target_model progen2-xlarge \
+  --num-samples 8 \
+  --max-length 512
+```
 
 # ProGen2 -- Original README
 Official release of the **ProGen2** models (`151M`, `764M`, `2.7B`, `6.4B`) for **Protein Engineering**.
