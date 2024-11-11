@@ -6,3 +6,4 @@ accelerate
 einops
 termcolor # for fun viz during printing
 vllm
+ipykernel
