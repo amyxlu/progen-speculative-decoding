@@ -20,7 +20,7 @@ def main():
     models_2B = [ 'progen2-large', 'progen2-BFD90' ]
     models_6B = [ 'progen2-xlarge' ]
     models = models_151M + models_754M + models_2B + models_6B
-    
+
     # (1) params
 
     parser = argparse.ArgumentParser()
@@ -35,6 +35,7 @@ def main():
     parser.add_argument('--fp16', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--context', type=str, default='1')
     parser.add_argument('--sanity', default=True, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--use_vllm', type=bool, default=False)
     args = parser.parse_args()
 
 
@@ -57,7 +58,7 @@ def main():
     # (3) load
 
     with print_time('loading parameters'):
-        model = create_model(ckpt=ckpt, fp16=args.fp16).to(device)
+        model = create_model(ckpt=ckpt, fp16=args.fp16, use_vllm=args.use_vllm).to(device)
 
 
     with print_time('loading tokenizer'):
@@ -115,7 +116,7 @@ def main():
             print()
             print(i)
             print(truncation)
-            
+
 
 
 if __name__ == '__main__':

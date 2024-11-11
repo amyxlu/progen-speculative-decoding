@@ -9,6 +9,7 @@ from torch import Tensor
 from tokenizers import Tokenizer
 from transformers.cache_utils import DynamicCache
 from torch.nn import functional as F
+from vllm import LLM
 
 from .modeling_progen import ProGenForCausalLM
 
@@ -43,7 +44,13 @@ def set_seed(seed, deterministic=True):
 # model
 
 
-def create_model(ckpt, fp16=True):
+def create_model(ckpt, fp16=True, use_vllm=False):
+    if use_vllm:
+        from vllm import ModelRegistry
+        ModelRegistry.register_model("ProGenForCausalLM", ProGenForCausalLM)
+        # hf_overrides only available in latest vllm version (after v0.6.3.post1)
+        # hf_overrides = {"use_vllm": True}
+        return LLM(model=ckpt, dtype="float16" if fp16 else "auto", skip_tokenizer_init=True, trust_remote_code=False)
     if fp16:
         return ProGenForCausalLM.from_pretrained(ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True)
     else:
@@ -130,12 +137,12 @@ class NucleusProcessor(MultinomialProcessor):
         sorted_logits[sorted_indices_to_remove] = -1e20
         logits = torch.gather(sorted_logits, -1, sorted_indices.argsort(-1))
         return logits
-    
+
 
 ####
 # https://github.com/romsto/Speculative-Decoding/blob/main/utils/logits_processor.py
 ###
-    
+
 class TopKNucleusProcessor(MultinomialProcessor):
     """Top-k and nucleus: Top-k sampling with top-p fallback."""
 
@@ -156,7 +163,7 @@ class TopKNucleusProcessor(MultinomialProcessor):
         sorted_logits[sorted_indices_to_remove] = -1e20
         logits = torch.gather(sorted_logits, -1, sorted_indices.argsort(-1))
         return logits
-    
+
 
 def prune_cache(cache: Union[Tuple[Tuple[Tensor, Tensor]], DynamicCache], num_tokens_to_discard: int):
     """
@@ -230,4 +237,3 @@ def prune_dynamic_cache(cache: DynamicCache, num_tokens_to_discard: int):
     cache._seen_tokens -= num_tokens_to_discard
 
     return cache
-
