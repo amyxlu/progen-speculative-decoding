@@ -5,14 +5,20 @@
 
 
 import argparse
+from pathlib import Path
 import time
 import torch
+from dotenv import load_dotenv
 
 from progen.sampling import sample, cross_entropy, truncate
 from progen.speculative import speculative_generate
 from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time, GreedyProcessor, LogitsProcessor
 import progen.printing_utils as printing
 from termcolor import colored
+import os
+
+load_dotenv(verbose=True)
+CHECKPOINT_DIR = os.environ.get('CHECKPOINT_DIR', './checkpoints')
 
 
 def main():
@@ -40,6 +46,7 @@ def main():
     parser.add_argument('--fp16', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--context', type=str, nargs="+", default='1', help="Defaults to Progen's BOS token.")
     parser.add_argument('--sanity', default=True, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--flash-attention', default=False, type=lambda x: (str(x).lower() == 'true'))
     args = parser.parse_args()
 
     # progen special tokens:
@@ -57,8 +64,8 @@ def main():
         args.device = 'cpu'
 
     device = torch.device(args.device)
-    draft_ckpt = f'./checkpoints/{args.draft_model}'
-    target_ckpt = f'./checkpoints/{args.target_model}'
+    draft_ckpt = Path(CHECKPOINT_DIR) / args.draft_model
+    target_ckpt = Path(CHECKPOINT_DIR)/ args.target_model
 
     if device.type == 'cpu':
         print('falling back to fp32')
@@ -67,8 +74,8 @@ def main():
     # (3) load
 
     with print_time('loading parameters'):
-        draft_model = create_model(ckpt=draft_ckpt, fp16=args.fp16).to(device)
-        target_model = create_model(ckpt=target_ckpt, fp16=args.fp16).to(device)
+        draft_model = create_model(ckpt=draft_ckpt, fp16=args.fp16, flash_attention=args.flash_attention).to(device)
+        target_model = create_model(ckpt=target_ckpt, fp16=args.fp16, flash_attention=args.flash_attention).to(device)
 
     with print_time('loading tokenizer'):
         tokenizer = create_tokenizer_custom(file='tokenizer.json')

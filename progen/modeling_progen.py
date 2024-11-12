@@ -224,20 +224,29 @@ class ProGenAttention(nn.Module):
         else:
             present = None
 
-        print(query.shape, key.shape, value.shape)
+        # query shape: (batch_size, num_heads, seq_len, head_dim)
+        # key shape: (batch_size, num_heads, seq_len, head_dim)
+        # value shape: (batch_size, num_heads, seq_len, head_dim)
         if self.flash_attention:
             assert not output_attentions, "output_attentions not supported with flash_attention"
             assert not self.training, "flash_attention implementation does not faithfully capture dropout"
+            # print('using flash_attention')
+            # print(query.dtype, key.dtype, value.dtype)
+            # print(query.shape, key.shape, value.shape)
             attn_output = F.scaled_dot_product_attention(
-                query, key, value, 
-                attn_mask=attention_mask,
+                query.to(torch.float32), key.to(torch.float32), value.to(torch.float32), 
+                attn_mask=attention_mask.to(query.dtype) if attention_mask is not None else None,
                 is_causal=True,
-            )
-            print('new', attn_output.shape)
+            ).to(hidden_states.dtype)
+            # print('new', attn_output.shape)
+            # orig, _ = self._attn(query, key, value, attention_mask, head_mask)
+            # breakpoint()
+            # assert torch.allclose(attn_output, orig, atol=1e-3, rtol=1e-2), "flash_attention implementation does not faithfully capture dropout"
         else:
             # compute self-attention: V x Softmax(QK^T)
             attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
-            print('original', attn_output.shape)
+            # print('original', attn_output.shape)
+        # output shape: (batch_size, num_heads, seq_len, head_dim)
 
         attn_output = self._merge_heads(attn_output, self.num_attention_heads, self.head_dim)
 

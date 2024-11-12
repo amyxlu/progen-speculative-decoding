@@ -12,7 +12,8 @@ from progen.sampling import sample, cross_entropy, truncate
 from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time
 
 
-CHECKPOINT_DIR = '/data/fjiahai/progen/checkpoints'
+load_dotenv(verbose=True)
+CHECKPOINT_DIR = os.environ.get('CHECKPOINT_DIR', './checkpoints')
 
 def main():
 
@@ -38,6 +39,7 @@ def main():
     parser.add_argument('--fp16', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--context', type=str, default='1')
     parser.add_argument('--sanity', default=True, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--flash-attention', default=False, type=lambda x: (str(x).lower() == 'true'))
     args = parser.parse_args()
 
 
@@ -60,7 +62,7 @@ def main():
     # (3) load
 
     with print_time('loading parameters'):
-        model = create_model(ckpt=ckpt, fp16=args.fp16).to(device)
+        model = create_model(ckpt=ckpt, fp16=args.fp16, flash_attention=args.flash_attention).to(device)
 
 
     with print_time('loading tokenizer'):

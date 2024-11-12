@@ -43,11 +43,15 @@ def set_seed(seed, deterministic=True):
 # model
 
 
-def create_model(ckpt, fp16=True):
+def create_model(ckpt, fp16=True, flash_attention=False):
     if fp16:
-        return ProGenForCausalLM.from_pretrained(ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True)
+        model = ProGenForCausalLM.from_pretrained(
+            ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True,
+            flash_attention=flash_attention)
     else:
-        return ProGenForCausalLM.from_pretrained(ckpt)
+        model = ProGenForCausalLM.from_pretrained(ckpt, flash_attention=flash_attention)
+    model.eval()
+    return model
 
 
 def create_tokenizer_custom(file):
