@@ -36,6 +36,7 @@ def main():
     parser.add_argument('--context', type=str, default='1')
     parser.add_argument('--sanity', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--use_vllm', default=True, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--separate_tokenizer', default=False, type=lambda x: (str(x).lower() == 'true'))
     args = parser.parse_args()
 
 
@@ -57,14 +58,17 @@ def main():
 
     # (3) load
 
+    if args.separate_tokenizer or not args.use_vllm:
+        with print_time('loading tokenizer'):
+            tokenizer = create_tokenizer_custom(file='tokenizer.json')
+    else:
+        tokenizer = None
+
     with print_time('loading parameters'):
-        model = create_model(ckpt=ckpt, fp16=args.fp16, use_vllm=args.use_vllm, tokenizer="tokenizer")
+        model = create_model(ckpt=ckpt, fp16=args.fp16, use_vllm=args.use_vllm, tokenizer="tokenizer" if tokenizer is None else None)
         if not args.use_vllm:
             model = model.to(device)
 
-    if not args.use_vllm:
-        with print_time('loading tokenizer'):
-            tokenizer = create_tokenizer_custom(file='tokenizer.json')
 
     # (4) sanity
 
@@ -112,7 +116,7 @@ def main():
 
     with print_time('sampling'):
         if args.use_vllm:
-            completions, outputs = sample_vllm(model=model, context=args.context, num_return_sequences=args.num_samples, temp=args.t, top_p=args.p, max_length=args.max_length)
+            completions, outputs = sample_vllm(device=device, model=model, tokenizer=tokenizer, context=args.context, num_return_sequences=args.num_samples, temp=args.t, top_p=args.p, max_length=args.max_length)
         else:
             completions = sample(device=device, model=model, tokenizer=tokenizer, context=args.context, pad_token_id=tokenizer.encode('<|pad|>').ids[0], num_return_sequences=args.num_samples, temp=args.t, top_p=args.p, max_length=args.max_length)
 
