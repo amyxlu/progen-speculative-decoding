@@ -12,6 +12,7 @@ from torch.nn import functional as F
 from vllm import LLM
 
 from .modeling_progen import ProGenForCausalLM
+from .modeling_progen_vllm import ProGenForCausalLM as ProGenForCausalLMVLLM
 
 
 class print_time:
@@ -47,10 +48,17 @@ def set_seed(seed, deterministic=True):
 def create_model(ckpt, fp16=True, use_vllm=False):
     if use_vllm:
         from vllm import ModelRegistry
-        ModelRegistry.register_model("ProGenForCausalLM", ProGenForCausalLM)
+        ModelRegistry.register_model("ProGenForCausalLM", ProGenForCausalLMVLLM)
         # hf_overrides only available in latest vllm version (after v0.6.3.post1)
         # hf_overrides = {"use_vllm": True}
-        return LLM(model=ckpt, dtype="float16" if fp16 else "auto", skip_tokenizer_init=True, trust_remote_code=False)
+        return LLM(
+            model=ckpt,
+            dtype="float16" if fp16 else "auto",
+            skip_tokenizer_init=True,
+            trust_remote_code=False,
+            # max_model_len=512,
+            # max_num_batched_tokens=512,
+        )
     if fp16:
         return ProGenForCausalLM.from_pretrained(ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True)
     else:

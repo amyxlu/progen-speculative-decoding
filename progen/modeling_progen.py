@@ -15,7 +15,7 @@
 
 # Modified forward-pass implementation based on https://github.com/huggingface/transformers/blob/main/src/transformers/models/gptj/modeling_gptj.py
 
-from typing import Iterable, List, Optional, Tuple
+from typing import Tuple
 
 import numpy as np
 
@@ -24,20 +24,12 @@ import torch.utils.checkpoint
 from torch import nn
 from torch.nn import CrossEntropyLoss
 
-from transformers import AutoModel
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
 from .configuration_progen import ProGenConfig
-from vllm.attention import AttentionMetadata
-from vllm.config import CacheConfig
-from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
-from vllm.model_executor.layers.quantization import QuantizationConfig
-from vllm.model_executor.model_loader.weight_utils import default_weight_loader
-from vllm.model_executor.sampling_metadata import SamplingMetadata
-from vllm.sequence import IntermediateTensors
 
 
 logger = logging.get_logger(__name__)
@@ -96,9 +88,6 @@ class ProGenAttention(nn.Module):
         if config.rotary_dim is not None:
             self.rotary_dim = config.rotary_dim
 
-        # vllm
-        self.forward = self._forward_vllm if config.use_vllm else self._forward
-
     def _split_heads(self, x, n_head, dim_head, mp_num):
         reshaped = x.reshape(x.shape[:-1] + (n_head//mp_num, dim_head))
         reshaped = reshaped.reshape(x.shape[:-2] + (-1, ) + reshaped.shape[-1:])
@@ -137,7 +126,6 @@ class ProGenAttention(nn.Module):
         attn_weights = torch.matmul(query, key.transpose(-1, -2))
 
         attn_weights = attn_weights / self.scale_attn
-        breakpoint()
         attn_weights = torch.where(causal_mask, attn_weights, self.masked_bias.to(attn_weights.dtype))
 
         if attention_mask is not None:
@@ -156,99 +144,7 @@ class ProGenAttention(nn.Module):
 
         return attn_output, attn_weights
 
-    def _forward_vllm(
-        self,
-        hidden_states,
-        attention_mask=None,
-        layer_past=torch.Tensor,
-        head_mask=None,
-        use_cache=False,
-        output_attentions=False,
-    ):
-        """Performs the forward pass of the attention layer.
-
-        Args:
-            layer_past: KV cache.
-        """
-        # Project hidden states to q, k, v
-        qkv = self.qkv_proj(hidden_states)
-        # TODO(enijkamp): factor out number of logical TPU-v3/v4 cores or make forward pass agnostic
-        # mp_num = 4
-        mp_num = 8
-        qkv_split = qkv.reshape(qkv.shape[:-1] + (mp_num, -1))
-
-        local_dim = self.head_dim * self.num_attention_heads // mp_num
-        # Split qkv to q, k, v
-        query, value, key = torch.split(qkv_split, local_dim, dim=-1)
-        # Split q, k, v to heads
-        query = self._split_heads(query, self.num_attention_heads, self.head_dim, mp_num=mp_num)
-        key = self._split_heads(key, self.num_attention_heads, self.head_dim, mp_num=mp_num)
-
-        value = self._split_heads(value, self.num_attention_heads, self.head_dim, mp_num=mp_num)
-        value = value.permute(0, 2, 1, 3)
-
-        seq_len = key.shape[1]
-        offset = 0
-
-        if torch.numel(layer_past) > 0:
-            breakpoint()
-            offset = layer_past[0].shape[-2]
-            seq_len += offset
-
-        # Compute positional embeddings for q and k
-        if self.rotary_dim is not None:
-            k_rot = key[:, :, :, : self.rotary_dim]
-            k_pass = key[:, :, :, self.rotary_dim :]
-
-            q_rot = query[:, :, :, : self.rotary_dim]
-            q_pass = query[:, :, :, self.rotary_dim :]
-
-            # Compute rotary positional embeddings for q and k
-            sincos = fixed_pos_embedding(k_rot, 1, seq_len=seq_len)
-            k_rot = apply_rotary_pos_emb(k_rot, sincos, offset=offset)
-            q_rot = apply_rotary_pos_emb(q_rot, sincos, offset=offset)
-
-            # Concatenate rotary embeddings with the rest
-            key = torch.cat([k_rot, k_pass], dim=-1)
-            query = torch.cat([q_rot, q_pass], dim=-1)
-        else:
-            sincos = fixed_pos_embedding(key, 1, seq_len=seq_len)
-            key = apply_rotary_pos_emb(key, sincos, offset=offset)
-            query = apply_rotary_pos_emb(query, sincos, offset=offset)
-
-        key = key.permute(0, 2, 1, 3)
-        query = query.permute(0, 2, 1, 3)
-
-        # Add key and value to the KV cache
-        if torch.numel(layer_past) > 0:
-            past_key = layer_past[0]
-            past_value = layer_past[1]
-            key = torch.cat((past_key, key), dim=-2)
-            value = torch.cat((past_value, value), dim=-2)
-
-        if use_cache is True:
-            present = (key, value)
-        else:
-            present = None
-
-        # compute self-attention: V x Softmax(QK^T)
-        attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
-
-        # Merge heads
-        attn_output = self._merge_heads(attn_output, self.num_attention_heads, self.head_dim)
-
-        # Project to output
-        attn_output = self.out_proj(attn_output)
-        # Dropout
-        attn_output = self.resid_dropout(attn_output)
-
-        outputs = (attn_output, present)
-        if output_attentions:
-            outputs += (attn_weights,)
-
-        return outputs  # a, present, (attentions)
-
-    def _forward(
+    def forward(
         self,
         hidden_states,
         attention_mask=None,
@@ -257,12 +153,7 @@ class ProGenAttention(nn.Module):
         use_cache=False,
         output_attentions=False,
     ):
-        """Performs the forward pass of the attention layer.
 
-        Args:
-            layer_past: KV cache.
-        """
-        # Project hidden states to q, k, v
         qkv = self.qkv_proj(hidden_states)
         # TODO(enijkamp): factor out number of logical TPU-v3/v4 cores or make forward pass agnostic
         # mp_num = 4
@@ -270,9 +161,7 @@ class ProGenAttention(nn.Module):
         qkv_split = qkv.reshape(qkv.shape[:-1] + (mp_num, -1))
 
         local_dim = self.head_dim * self.num_attention_heads // mp_num
-        # Split qkv to q, k, v
         query, value, key = torch.split(qkv_split, local_dim, dim=-1)
-        # Split q, k, v to heads
         query = self._split_heads(query, self.num_attention_heads, self.head_dim, mp_num=mp_num)
         key = self._split_heads(key, self.num_attention_heads, self.head_dim, mp_num=mp_num)
 
@@ -286,7 +175,6 @@ class ProGenAttention(nn.Module):
             offset = layer_past[0].shape[-2]
             seq_len += offset
 
-        # Compute positional embeddings for q and k
         if self.rotary_dim is not None:
             k_rot = key[:, :, :, : self.rotary_dim]
             k_pass = key[:, :, :, self.rotary_dim :]
@@ -294,12 +182,10 @@ class ProGenAttention(nn.Module):
             q_rot = query[:, :, :, : self.rotary_dim]
             q_pass = query[:, :, :, self.rotary_dim :]
 
-            # Compute rotary positional embeddings for q and k
             sincos = fixed_pos_embedding(k_rot, 1, seq_len=seq_len)
             k_rot = apply_rotary_pos_emb(k_rot, sincos, offset=offset)
             q_rot = apply_rotary_pos_emb(q_rot, sincos, offset=offset)
 
-            # Concatenate rotary embeddings with the rest
             key = torch.cat([k_rot, k_pass], dim=-1)
             query = torch.cat([q_rot, q_pass], dim=-1)
         else:
@@ -310,7 +196,6 @@ class ProGenAttention(nn.Module):
         key = key.permute(0, 2, 1, 3)
         query = query.permute(0, 2, 1, 3)
 
-        # Add key and value to the KV cache
         if layer_past is not None:
             past_key = layer_past[0]
             past_value = layer_past[1]
@@ -325,12 +210,9 @@ class ProGenAttention(nn.Module):
         # compute self-attention: V x Softmax(QK^T)
         attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
 
-        # Merge heads
         attn_output = self._merge_heads(attn_output, self.num_attention_heads, self.head_dim)
 
-        # Project to output
         attn_output = self.out_proj(attn_output)
-        # Dropout
         attn_output = self.resid_dropout(attn_output)
 
         outputs = (attn_output, present)
@@ -367,42 +249,7 @@ class ProGenBlock(nn.Module):
         self.attn = ProGenAttention(config)
         self.mlp = ProGenMLP(inner_dim, config)
 
-        # vllm
-        self.forward = self._forward_vllm if config.use_vllm else self._forward
-
-    def _forward_vllm(
-        self,
-        hidden_states,
-        layer_past=None,
-        attention_mask=None,
-        head_mask=None,
-        use_cache=False,
-        output_attentions=False,
-    ):
-        residual = hidden_states
-        hidden_states = self.ln_1(hidden_states)
-        attn_outputs = self.attn(
-            hidden_states,
-            layer_past=layer_past,
-            attention_mask=attention_mask,
-            head_mask=head_mask,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-        )
-        attn_output = attn_outputs[0]  # output_attn: a, present, (attentions)
-        outputs = attn_outputs[1:]
-
-        feed_forward_hidden_states = self.mlp(hidden_states)
-        hidden_states = attn_output + feed_forward_hidden_states + residual
-
-        if use_cache:
-            outputs = (hidden_states,) + outputs
-        else:
-            outputs = (hidden_states,) + outputs[1:]
-
-        return outputs  # hidden_states, present, (attentions)
-
-    def _forward(
+    def forward(
         self,
         hidden_states,
         layer_past=None,
@@ -482,9 +329,6 @@ class ProGenModel(ProGenPreTrainedModel):
         self.model_parallel = False
         self.device_map = None
 
-        # vllm
-        self.forward = self._forward_vllm if config.use_vllm else self._forward
-
 
     def parallelize(self, device_map=None):
         # Check validity of device_map
@@ -522,184 +366,7 @@ class ProGenModel(ProGenPreTrainedModel):
     def set_input_embeddings(self, new_embeddings):
         self.wte = new_embeddings
 
-    def _forward_vllm(
-        self,
-        input_ids: torch.Tensor,
-        positions: torch.Tensor,
-        kv_caches: List[torch.Tensor],
-        attn_metadata: AttentionMetadata,
-        intermediate_tensors: Optional[IntermediateTensors] = None,
-        inputs_embeds: Optional[torch.Tensor] = None,
-        # attention_mask: Optional[torch.Tensor] = None,
-        # token_type_ids=None,
-        # position_ids=None,
-        # head_mask=None,
-        # use_cache=None,
-        # output_attentions=None,
-        # output_hidden_states=None,
-        # return_dict=None,
-    ):
-        output_attentions = self.config.output_attentions
-        output_hidden_states = self.config.output_hidden_states
-        use_cache = self.config.use_cache
-        return_dict = self.config.use_return_dict
-
-        if input_ids is not None and inputs_embeds is not None:
-            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
-        elif input_ids is not None:
-            input_shape = input_ids.size()
-            input_ids = input_ids.view(-1, input_shape[-1])
-            batch_size = input_ids.shape[0]
-        elif inputs_embeds is not None:
-            input_shape = inputs_embeds.size()[:-1]
-            batch_size = inputs_embeds.shape[0]
-        else:
-            raise ValueError("You have to specify either input_ids or inputs_embeds")
-
-        device = input_ids.device if input_ids is not None else inputs_embeds.device
-
-        token_type_ids = None  # intermediate_tensors.get("token_type_ids")
-        if token_type_ids is not None:
-            token_type_ids = token_type_ids.view(-1, input_shape[-1])
-
-        if positions is not None:
-            positions = positions.view(-1, input_shape[-1])
-
-        # if kv_caches is None:
-        #     past_length = 0
-        #     kv_caches = tuple([None] * len(self.h))
-        # else:
-        #     past_length = kv_caches[0][0].size(-2)
-
-        # if positions is None:
-        #     positions = torch.arange(past_length, input_shape[-1] + past_length, dtype=torch.long, device=device)
-        #     positions = positions.unsqueeze(0).view(-1, input_shape[-1])
-
-        # Attention mask.
-        attention_mask = None  # intermediate_tensors.get("attention_mask")
-        if attention_mask is not None:
-            assert batch_size > 0, "batch_size has to be defined and > 0"
-            attention_mask = attention_mask.view(batch_size, -1)
-            # We create a 3D attention mask from a 2D tensor mask.
-            # Sizes are [batch_size, 1, 1, to_seq_length]
-            # So we can broadcast to [batch_size, num_heads, from_seq_length, to_seq_length]
-            # this attention mask is more simple than the triangular masking of causal attention
-            # used in OpenAI GPT, we just need to prepare the broadcast dimension here.
-            attention_mask = attention_mask[:, None, None, :]
-
-            # Since attention_mask is 1.0 for positions we want to attend and 0.0 for
-            # masked positions, this operation will create a tensor which is 0.0 for
-            # positions we want to attend and -10000.0 for masked positions.
-            # Since we are adding it to the raw scores before the softmax, this is
-            # effectively the same as removing these entirely.
-            attention_mask = attention_mask.to(dtype=self.dtype)  # fp16 compatibility
-            attention_mask = (1.0 - attention_mask) * -10000.0
-
-        # Prepare head mask if needed
-        # 1.0 in head_mask indicate we keep the head
-        # attention_probs has shape bsz x num_attention_heads x N x N
-        # head_mask has shape n_layer x batch x num_attention_heads x N x N
-        head_mask = None  # intermediate_tensors.get("head_mask")
-        head_mask = self.get_head_mask(head_mask, self.config.n_layer)
-
-        if inputs_embeds is None:
-            inputs_embeds = self.wte(input_ids)
-
-        hidden_states = inputs_embeds
-
-        if token_type_ids is not None:
-            token_type_embeds = self.wte(token_type_ids)
-            hidden_states = hidden_states + token_type_embeds
-
-        hidden_states = self.drop(hidden_states)
-
-        output_shape = input_shape + (hidden_states.size(-1),)
-
-        presents = () if use_cache else None
-        all_self_attentions = () if output_attentions else None
-        all_hidden_states = () if output_hidden_states else None
-        for i, (block, layer_past) in enumerate(zip(self.h, kv_caches)):
-
-            # Model parallel
-            # if self.model_parallel:
-            #     torch.cuda.set_device(hidden_states.device)
-            #     # Ensure layer_past is on same device as hidden_states (might not be correct)
-            #     if layer_past is not None:
-            #         layer_past = tuple(past_state.to(hidden_states.device) for past_state in layer_past)
-            #     # Ensure that attention_mask is always on the same device as hidden_states
-            #     if attention_mask is not None:
-            #         attention_mask = attention_mask.to(hidden_states.device)
-            #     if isinstance(head_mask, torch.Tensor):
-            #         head_mask = head_mask.to(hidden_states.device)
-            if output_hidden_states:
-                all_hidden_states = all_hidden_states + (hidden_states,)
-
-            if getattr(self.config, "gradient_checkpointing", False) and self.training:
-                raise NotImplementedError
-
-                if use_cache:
-                    logger.warning(
-                        "`use_cache=True` is incompatible with `config.gradient_checkpointing=True`. Setting "
-                        "`use_cache=False`..."
-                    )
-                    use_cache = False
-
-                def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        # None for past_key_value
-                        return module(*inputs, use_cache, output_attentions)
-
-                    return custom_forward
-
-                outputs = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block),
-                    hidden_states,
-                    None,
-                    attention_mask,
-                    head_mask[i],
-                )
-            else:
-                outputs = block(
-                    hidden_states,
-                    layer_past=layer_past,
-                    attention_mask=attention_mask,
-                    head_mask=head_mask[i],
-                    use_cache=use_cache,
-                    output_attentions=output_attentions,
-                )
-
-            hidden_states = outputs[0]
-            if use_cache is True:
-                presents = presents + (outputs[1],)
-
-            if output_attentions:
-                all_self_attentions = all_self_attentions + (outputs[2 if use_cache else 1],)
-
-            # Model Parallel: If it's the last layer for that device, put things on the next device
-            # if self.model_parallel:
-            #     for k, v in self.device_map.items():
-            #         if i == v[-1] and "cuda:" + str(k) != self.last_device:
-            #             hidden_states = hidden_states.to("cuda:" + str(k + 1))
-
-        hidden_states = self.ln_f(hidden_states)
-
-        hidden_states = hidden_states.view(*output_shape)
-        # Add last hidden state
-        if output_hidden_states:
-            all_hidden_states = all_hidden_states + (hidden_states,)
-
-        # if not return_dict:
-        #     return tuple(v for v in [hidden_states, presents, all_hidden_states, all_self_attentions] if v is not None)
-
-        # return BaseModelOutputWithPast(
-        #     last_hidden_state=hidden_states,
-        #     past_key_values=presents,
-        #     hidden_states=all_hidden_states,
-        #     attentions=all_self_attentions,
-        # )
-        return hidden_states
-
-    def _forward(
+    def forward(
         self,
         input_ids=None,
         past_key_values=None,
@@ -874,12 +541,7 @@ class ProGenModel(ProGenPreTrainedModel):
 class ProGenForCausalLM(ProGenPreTrainedModel):
     _keys_to_ignore_on_load_missing = [r"h\.\d+\.attn\.masked_bias", r"h\.\d+\.attn\.bias", r"lm_head\.weight"]
 
-    def __init__(
-            self,
-            config: ProGenConfig,
-            cache_config: Optional[CacheConfig] = None,
-            quant_config: Optional[QuantizationConfig] = None,
-        ):
+    def __init__(self, config):
         super().__init__(config)
         self.transformer = ProGenModel(config)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size)
@@ -888,14 +550,6 @@ class ProGenForCausalLM(ProGenPreTrainedModel):
         # Model parallel
         self.model_parallel = False
         self.device_map = None
-
-        if config.use_vllm:
-            self.forward = self._forward_vllm
-            self.sampler = Sampler()
-        else:
-            self.forward = self._forward
-            self.sampler = None
-
 
     def parallelize(self, device_map=None):
         self.device_map = (
@@ -949,115 +603,7 @@ class ProGenForCausalLM(ProGenPreTrainedModel):
             "token_type_ids": token_type_ids,
         }
 
-    def _forward_vllm(
-        self,
-        input_ids: torch.Tensor,
-        # past_key_values=None,
-        # attention_mask=None,
-        # token_type_ids=None,
-        # position_ids=None,
-        # head_mask=None,
-        # inputs_embeds=None,
-        # labels=None,
-        # use_cache=None,
-        # output_attentions=None,
-        # output_hidden_states=None,
-        # return_dict=None,
-        positions: torch.Tensor,
-        kv_caches: List[torch.Tensor],
-        attn_metadata: AttentionMetadata,
-        intermediate_tensors: Optional[IntermediateTensors] = None,
-    ) -> torch.Tensor:
-        r"""
-        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
-            Labels for language modeling. Note that the labels **are shifted** inside the model, i.e. you can set
-            ``labels = input_ids`` Indices are selected in ``[-100, 0, ..., config.vocab_size]`` All labels set to
-            ``-100`` are ignored (masked), the loss is only computed for labels in ``[0, ..., config.vocab_size]``
-        """
-        # return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        hidden_states = self.transformer(
-            input_ids,
-            positions,
-            kv_caches,
-            attn_metadata,
-            intermediate_tensors=intermediate_tensors,
-            # Should be fine to set attention_mask to None for sampling?
-            # attention_mask=None,
-            # token_type_ids=None,
-            # head_mask=None,
-            # inputs_embeds=None,
-            # # Set the rest of these to None, which will use the config.
-            # use_cache=None,
-            # output_attentions=None,
-            # output_hidden_states=None,
-            # return_dict=None,
-        )
-
-        return hidden_states
-
-        # Set device for model parallelism
-        # if self.model_parallel:
-        #     torch.cuda.set_device(self.transformer.first_device)
-        #     hidden_states = hidden_states.to(self.lm_head.weight.device)
-
-        # make sure sampling in fp16 works correctly and
-        # compute loss in fp32 to match with mesh-tf version
-        # https://github.com/EleutherAI/gpt-neo/blob/89ce74164da2fb16179106f54e2269b5da8db333/models/gpt2/gpt2.py#L179
-        # lm_logits = self.lm_head(hidden_states).to(torch.float32)
-
-        # loss = None
-        # if labels is not None:
-        #     # Shift so that tokens < n predict n
-        #     shift_logits = lm_logits[..., :-1, :].contiguous()
-        #     shift_labels = labels[..., 1:].contiguous()
-        #     # Flatten the tokens
-        #     loss_fct = CrossEntropyLoss()
-        #     loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-
-        #     loss = loss.to(hidden_states.dtype)
-
-        # if not return_dict:
-        #     output = (lm_logits,) + transformer_outputs[1:]
-        #     return ((loss,) + output) if loss is not None else output
-
-        # return CausalLMOutputWithPast(
-        #     loss=loss,
-        #     logits=lm_logits,
-        #     past_key_values=transformer_outputs.past_key_values,
-        #     hidden_states=transformer_outputs.hidden_states,
-        #     attentions=transformer_outputs.attentions,
-        # )
-
-
-    def compute_logits(
-        self,
-        hidden_states: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
-    ) -> Optional[torch.Tensor]:
-        # TODO: use sampling_metadata somehow?
-        return self.lm_head(hidden_states).to(torch.float32)
-
-    def sample(
-        self,
-        logits: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
-    ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(logits, sampling_metadata)
-        return next_tokens
-
-    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
-        params_dict = dict(self.named_parameters(remove_duplicate=False))
-        for name, loaded_weight in weights:
-            if name.endswith("attn.bias") or name.endswith("attn.masked_bias"):
-                continue
-            param = params_dict[name]
-            weight_loader = getattr(param, "weight_loader",
-                                    default_weight_loader)
-            weight_loader(param, loaded_weight)
-
-
-    def _forward(
+    def forward(
         self,
         input_ids=None,
         past_key_values=None,
@@ -1073,22 +619,11 @@ class ProGenForCausalLM(ProGenPreTrainedModel):
         return_dict=None,
     ):
         r"""
-        L is the sequence length.
-
-        Args:
-            input_ids: [225], [1, L]
-            attention_mask: [1, L]
-            position_ids: [1, L]
-            labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
-                Labels for language modeling. Note that the labels **are shifted** inside the model, i.e. you can set
-                ``labels = input_ids`` Indices are selected in ``[-100, 0, ..., config.vocab_size]`` All labels set to
-                ``-100`` are ignored (masked), the loss is only computed for labels in ``[0, ..., config.vocab_size]``
+        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
+            Labels for language modeling. Note that the labels **are shifted** inside the model, i.e. you can set
+            ``labels = input_ids`` Indices are selected in ``[-100, 0, ..., config.vocab_size]`` All labels set to
+            ``-100`` are ignored (masked), the loss is only computed for labels in ``[0, ..., config.vocab_size]``
         """
-        # TODO: remove debugging prints.
-        # Print input args
-        # for k, v in locals().items():
-        #     if k != "self":
-        #         print(f"{k}: {v}")
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         transformer_outputs = self.transformer(
@@ -1114,8 +649,6 @@ class ProGenForCausalLM(ProGenPreTrainedModel):
         # make sure sampling in fp16 works correctly and
         # compute loss in fp32 to match with mesh-tf version
         # https://github.com/EleutherAI/gpt-neo/blob/89ce74164da2fb16179106f54e2269b5da8db333/models/gpt2/gpt2.py#L179
-        # [batch_size, seq_length, vocab_size?]
-        # E.g., [1, 6, 32] but not sure if 32 is the vocab size.
         lm_logits = self.lm_head(hidden_states).to(torch.float32)
 
         loss = None
@@ -1152,6 +685,3 @@ class ProGenForCausalLM(ProGenPreTrainedModel):
             tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past)
             for layer_past in past
         )
-
-
-AutoModel.register(ProGenConfig, ProGenForCausalLM)

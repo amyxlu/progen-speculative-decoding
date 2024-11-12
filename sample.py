@@ -35,7 +35,7 @@ def main():
     parser.add_argument('--fp16', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--context', type=str, default='1')
     parser.add_argument('--sanity', default=True, type=lambda x: (str(x).lower() == 'true'))
-    parser.add_argument('--use_vllm', type=bool, default=False)
+    parser.add_argument('--use_vllm', default=True, type=lambda x: (str(x).lower() == 'true'))
     args = parser.parse_args()
 
 
@@ -58,7 +58,9 @@ def main():
     # (3) load
 
     with print_time('loading parameters'):
-        model = create_model(ckpt=ckpt, fp16=args.fp16, use_vllm=args.use_vllm).to(device)
+        model = create_model(ckpt=ckpt, fp16=args.fp16, use_vllm=args.use_vllm)
+        if not args.use_vllm:
+            model = model.to(device)
 
 
     with print_time('loading tokenizer'):
