@@ -23,6 +23,7 @@ import torch
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import CrossEntropyLoss
+import torch.nn.functional as F
 
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
@@ -85,6 +86,8 @@ class ProGenAttention(nn.Module):
 
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
         self.rotary_dim = None
+
+        self.flash_attention = config.flash_attention
         if config.rotary_dim is not None:
             self.rotary_dim = config.rotary_dim
 
@@ -144,6 +147,16 @@ class ProGenAttention(nn.Module):
 
         return attn_output, attn_weights
 
+    def _forward_flash_attention(
+        self,
+        hidden_states,
+        attention_mask=None,
+        layer_past=None,
+        head_mask=None,
+        use_cache=False,
+        output_attentions=False,
+    ):
+        pass
     def forward(
         self,
         hidden_states,
@@ -153,6 +166,10 @@ class ProGenAttention(nn.Module):
         use_cache=False,
         output_attentions=False,
     ):
+        # if self.flash_attention:
+        #     return self._forward_flash_attention(
+        #         hidden_states, attention_mask, layer_past, head_mask, use_cache, output_attentions
+        #     )
 
         qkv = self.qkv_proj(hidden_states)
         # TODO(enijkamp): factor out number of logical TPU-v3/v4 cores or make forward pass agnostic
@@ -207,8 +224,20 @@ class ProGenAttention(nn.Module):
         else:
             present = None
 
-        # compute self-attention: V x Softmax(QK^T)
-        attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
+        print(query.shape, key.shape, value.shape)
+        if self.flash_attention:
+            assert not output_attentions, "output_attentions not supported with flash_attention"
+            assert not self.training, "flash_attention implementation does not faithfully capture dropout"
+            attn_output = F.scaled_dot_product_attention(
+                query, key, value, 
+                attn_mask=attention_mask,
+                is_causal=True,
+            )
+            print('new', attn_output.shape)
+        else:
+            # compute self-attention: V x Softmax(QK^T)
+            attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
+            print('original', attn_output.shape)
 
         attn_output = self._merge_heads(attn_output, self.num_attention_heads, self.head_dim)
 

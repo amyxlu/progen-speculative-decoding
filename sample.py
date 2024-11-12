@@ -5,11 +5,14 @@
 
 
 import argparse
+from pathlib import Path
 import torch
 
 from progen.sampling import sample, cross_entropy, truncate
 from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time
 
+
+CHECKPOINT_DIR = '/data/fjiahai/progen/checkpoints'
 
 def main():
 
@@ -48,7 +51,7 @@ def main():
         args.device = 'cpu'
 
     device = torch.device(args.device)
-    ckpt = f'./checkpoints/{args.model}'
+    ckpt = Path(CHECKPOINT_DIR) / args.model
 
     if device.type == 'cpu':
         print('falling back to fp32')
