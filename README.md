@@ -29,7 +29,8 @@ python sample.py --model progen2-xlarge --num-samples 1 --max-length 512
 python run_speculative_sampling.py \
   --draft_model progen2-small \
   --target_model progen2-xlarge \
-  --num-samples 8 \
+  --num-reruns 8 \  # batch size is always 1; this just loops the speculative
+  decoding function
   --max-length 512
 ```
 
