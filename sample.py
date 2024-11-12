@@ -6,6 +6,8 @@
 
 import argparse
 from pathlib import Path
+from dotenv import load_dotenv
+import os
 import torch
 
 from progen.sampling import sample, cross_entropy, truncate
