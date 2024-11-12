@@ -9,6 +9,7 @@ import random
 import torch
 
 from vllm import LLM, SamplingParams
+from vllm.inputs.data import TokensPrompt
 
 
 def sample(device, model, tokenizer, context, max_length, num_return_sequences, top_p, temp, pad_token_id):
@@ -19,9 +20,8 @@ def sample(device, model, tokenizer, context, max_length, num_return_sequences, 
         as_lists = lambda batch: [batch[i, ...].detach().cpu().numpy().tolist() for i in range(batch.shape[0])]
         return tokenizer.decode_batch(as_lists(tokens_batch))
 
-def sample_vllm(
-        device, model: LLM, tokenizer, context, max_length, num_return_sequences, top_p,
-        temp, pad_token_id):
+
+def sample_vllm(model: LLM, context, max_length, num_return_sequences, top_p, temp):
     """Sample from the VLLM model."""
     sampling_params = SamplingParams(
         n=num_return_sequences,
@@ -29,13 +29,21 @@ def sample_vllm(
         top_p=top_p,
         max_tokens=max_length,
     )
-    hf_overrides = dict(
-        pad_token_id=pad_token_id,
-    )
-    input_ids = torch.tensor(tokenizer.encode(context).ids).view([1, -1]).to(device)
-    outputs = model.generate(input_ids, sampling_params, hf_overrides=hf_overrides)
-    tokens_batch = [output.outputs[0].text for output in outputs]
-    return tokenizer.decode_batch(tokens_batch)
+    # hf_overrides = dict(
+    #     pad_token_id=pad_token_id,
+    # )
+    # input_ids = torch.tensor(tokenizer.encode(context).ids).view([1, -1]).to(device)
+    # prompts = TokensPrompt(prompt_token_ids=input_ids)
+    # outputs = model.generate(prompts, sampling_params, hf_overrides=hf_overrides)
+    # tokens_batch = [output.outputs[0].text for output in outputs]
+    # return tokenizer.decode_batch(tokens_batch)
+
+    outputs = model.generate(context, sampling_params)
+    assert len(outputs) == 1
+    assert len(outputs[0].outputs) == num_return_sequences
+
+    output_texts = [output.text for output in outputs[0].outputs]
+    return output_texts, outputs
 
 
 def truncate(sample, terminals):

@@ -7,7 +7,7 @@
 import argparse
 import torch
 
-from progen.sampling import sample, cross_entropy, truncate
+from progen.sampling import sample, sample_vllm, cross_entropy, truncate
 from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time
 
 
@@ -58,13 +58,13 @@ def main():
     # (3) load
 
     with print_time('loading parameters'):
-        model = create_model(ckpt=ckpt, fp16=args.fp16, use_vllm=args.use_vllm)
+        model = create_model(ckpt=ckpt, fp16=args.fp16, use_vllm=args.use_vllm, tokenizer="tokenizer")
         if not args.use_vllm:
             model = model.to(device)
 
-
-    with print_time('loading tokenizer'):
-        tokenizer = create_tokenizer_custom(file='tokenizer.json')
+    if not args.use_vllm:
+        with print_time('loading tokenizer'):
+            tokenizer = create_tokenizer_custom(file='tokenizer.json')
 
     # (4) sanity
 
@@ -76,7 +76,10 @@ def main():
                 with torch.no_grad():
                     with torch.cuda.amp.autocast(enabled=args.fp16):
                         target = torch.tensor(tokenizer.encode(tokens).ids).to(device)
-                        logits = model(target, labels=target).logits
+                        if args.use_vllm:
+                            raise NotImplementedError
+                        else:
+                            logits = model(target, labels=target).logits
 
                         # shift
                         logits = logits[:-1, ...]
@@ -108,7 +111,11 @@ def main():
     # (5) sample
 
     with print_time('sampling'):
-        completions = sample(device=device, model=model, tokenizer=tokenizer, context=args.context, pad_token_id=tokenizer.encode('<|pad|>').ids[0], num_return_sequences=args.num_samples, temp=args.t, top_p=args.p, max_length=args.max_length)
+        if args.use_vllm:
+            completions, outputs = sample_vllm(model=model, context=args.context, num_return_sequences=args.num_samples, temp=args.t, top_p=args.p, max_length=args.max_length)
+        else:
+            completions = sample(device=device, model=model, tokenizer=tokenizer, context=args.context, pad_token_id=tokenizer.encode('<|pad|>').ids[0], num_return_sequences=args.num_samples, temp=args.t, top_p=args.p, max_length=args.max_length)
+
         truncations = [truncate(completion, terminals=['1', '2']) for completion in completions]
 
         print(args.context)

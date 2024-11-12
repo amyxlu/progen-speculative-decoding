@@ -45,7 +45,7 @@ def set_seed(seed, deterministic=True):
 # model
 
 
-def create_model(ckpt, fp16=True, use_vllm=False):
+def create_model(ckpt, fp16=True, use_vllm=False, tokenizer=None):
     if use_vllm:
         from vllm import ModelRegistry
         ModelRegistry.register_model("ProGenForCausalLM", ProGenForCausalLMVLLM)
@@ -53,8 +53,9 @@ def create_model(ckpt, fp16=True, use_vllm=False):
         # hf_overrides = {"use_vllm": True}
         return LLM(
             model=ckpt,
+            tokenizer=tokenizer,
             dtype="float16" if fp16 else "auto",
-            skip_tokenizer_init=True,
+            skip_tokenizer_init=tokenizer is None,
             trust_remote_code=False,
             # max_model_len=512,
             # max_num_batched_tokens=512,

@@ -289,8 +289,6 @@ class ProGenForCausalLM(nn.Module):
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         params_dict = dict(self.named_parameters(remove_duplicate=False))
-        # weights = {name: weight for name, weight in weights}
-        # breakpoint()
         for name, loaded_weight in weights:
             if ".attn.bias" in name or ".attn.masked_bias" in name:
                 # Skip attention mask.
