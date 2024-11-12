@@ -27,7 +27,7 @@ def speculative_generate(
     tokenizer = None,
     gamma: int = 5,
     logits_processor: LogitsProcessor = GreedyProcessor(),
-    max_gen_len: int = 40,
+    max_gen_len: int = 512,
     eos_tokens_id: int | List[int] = 1,
     pad_token_id: int = 0,
     use_cache: bool = False,

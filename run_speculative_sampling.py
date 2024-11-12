@@ -5,12 +5,14 @@
 
 
 import argparse
+import time
 import torch
 
 from progen.sampling import sample, cross_entropy, truncate
 from progen.speculative import speculative_generate
 from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time, GreedyProcessor, LogitsProcessor
 import progen.printing_utils as printing
+from termcolor import colored
 
 
 def main():
@@ -34,7 +36,7 @@ def main():
     parser.add_argument('--p', type=float, default=0.95)
     parser.add_argument('--t', type=float, default=0.2)
     parser.add_argument('--max-length', type=int, default=256)
-    parser.add_argument('--num-samples', type=int, default=1)
+    parser.add_argument('--num-reruns', type=int, default=1)
     parser.add_argument('--fp16', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--context', type=str, nargs="+", default='1', help="Defaults to Progen's BOS token.")
     parser.add_argument('--sanity', default=True, type=lambda x: (str(x).lower() == 'true'))
@@ -81,23 +83,36 @@ def main():
     bos_tok = tokenizer.token_to_id("<|bos|>")
     pad_tok = tokenizer.token_to_id("<|pad|>")
 
-    ids, accept_rate = speculative_generate(
-        inputs = inputs, #TODO
-        drafter = draft_model,
-        target = target_model,
-        tokenizer = tokenizer,
-        gamma = 5,
-        logits_processor = GreedyProcessor(),
-        max_gen_len = 40,
-        eos_tokens_id = eos_tok,
-        pad_token_id = pad_tok,
-        use_cache = False,
-        skip_sample_adjustment = False,
-        first_target = True, 
-        debug = False,
-    )
+    for _ in range(args.num_reruns):
+        spec_start_time = time.time()
+        ids, accept_rate = speculative_generate(
+            inputs = inputs,
+            drafter = draft_model,
+            target = target_model,
+            tokenizer = tokenizer,
+            gamma = 5,
+            logits_processor = GreedyProcessor(),
+            max_gen_len = args.max_length,
+            eos_tokens_id = eos_tok,
+            pad_token_id = pad_tok,
+            use_cache = False,
+            skip_sample_adjustment = False,
+            first_target = True, 
+            debug = False,
+        )
         
-     
+        spec_end_time = time.time()
+        spec_output = tokenizer.decode(ids, skip_special_tokens=True)
+
+        print(colored("========== Speculative ==========", "green"))
+        print(colored("Out:", "green"), spec_output)
+        print(colored(f"Acceptance rate: {accept_rate:.3f}", "green"))
+
+        spec_throughput = len(spec_output) / (spec_end_time - spec_start_time)
+        print(colored(f"Time: {spec_end_time - spec_start_time:.1f}s", "green"))
+        print(colored(f"Throughput: {spec_throughput:.1f} tokens/s", "green"))
+        print(colored("========== Speculative ==========", "green")) 
+        
 
 if __name__ == '__main__':
     main()
