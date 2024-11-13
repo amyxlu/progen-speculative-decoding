@@ -47,9 +47,12 @@ def create_model(ckpt, fp16=True, flash_attention=False):
     if fp16:
         model = ProGenForCausalLM.from_pretrained(
             ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True,
-            flash_attention=flash_attention)
+            flash_attention=flash_attention, ragged_batches=True
+        )
     else:
-        model = ProGenForCausalLM.from_pretrained(ckpt, flash_attention=flash_attention)
+        model = ProGenForCausalLM.from_pretrained(
+            ckpt,
+            flash_attention=flash_attention, ragged_batches=True)
     model.eval()
     return model
 

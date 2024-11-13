@@ -32,6 +32,8 @@ from transformers.utils import logging
 from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
 from .configuration_progen import ProGenConfig
 
+import einops
+from flash_attn import flash_attn_varlen_func
 
 logger = logging.get_logger(__name__)
 
@@ -46,14 +48,26 @@ def fixed_pos_embedding(x, seq_dim=1, seq_len=None):
 
 
 def rotate_every_two(x):
-    x1 = x[:, :, :, ::2]
-    x2 = x[:, :, :, 1::2]
+    x1 = x[..., ::2]
+    x2 = x[..., 1::2]
     x = torch.stack((-x2, x1), axis=-1)
     return x.flatten(-2)  # in einsum notation: rearrange(x, '... d j -> ... (d j)')
 
 
 def apply_rotary_pos_emb(x, sincos, offset=0):
     sin, cos = map(lambda t: t[None, offset : x.shape[1] + offset, None, :].repeat_interleave(2, 3), sincos)
+    # einsum notation for lambda t: repeat(t[offset:x.shape[1]+offset,:], "n d -> () n () (d j)", j=2)
+    return (x * cos) + (rotate_every_two(x) * sin)
+
+def apply_rotary_pos_emb_pos(x, sincos, position_ids):
+    '''
+    Alternate implementation based on position_ids of x.
+
+    Args:
+        x - [squashed_seq_len, num_heads, head_dim]
+        position_ids - [squashed_seq_len]
+    '''
+    sin, cos = map(lambda t: t[position_ids, None, :].repeat_interleave(2, 2), sincos)
     # einsum notation for lambda t: repeat(t[offset:x.shape[1]+offset,:], "n d -> () n () (d j)", j=2)
     return (x * cos) + (rotate_every_two(x) * sin)
 
@@ -88,6 +102,7 @@ class ProGenAttention(nn.Module):
         self.rotary_dim = None
 
         self.flash_attention = config.flash_attention
+        self.ragged_batches = config.ragged_batches
         if config.rotary_dim is not None:
             self.rotary_dim = config.rotary_dim
 
@@ -104,6 +119,8 @@ class ProGenAttention(nn.Module):
             tensor = tensor.permute(0, 1, 3, 2, 4).contiguous()
         elif len(tensor.shape) == 4:
             tensor = tensor.permute(0, 2, 1, 3).contiguous()
+        elif len(tensor.shape) == 3:
+            pass
         else:
             raise ValueError(f"Input tensor rank should be one of [4, 5], but is: {len(tensor.shape)}")
         new_shape = tensor.size()[:-2] + (num_attention_heads * attn_head_size,)
@@ -147,7 +164,7 @@ class ProGenAttention(nn.Module):
 
         return attn_output, attn_weights
 
-    def _forward_flash_attention(
+    def _forward_ragged_batches(
         self,
         hidden_states,
         attention_mask=None,
@@ -155,8 +172,105 @@ class ProGenAttention(nn.Module):
         head_mask=None,
         use_cache=False,
         output_attentions=False,
+        hidden_shape=None
     ):
-        pass
+        qkv = self.qkv_proj(hidden_states)
+        # TODO(enijkamp): factor out number of logical TPU-v3/v4 cores or make forward pass agnostic
+        # mp_num = 4
+        mp_num = 8
+        qkv_split = qkv.reshape(qkv.shape[:-1] + (mp_num, -1))
+
+        # JH: this is super weird thing
+        # they're splitting the embed_dim by mp_num, so that initially we have
+        # qkv_split.shape = (batch_size, seq_len, mp_num, embed_dim // mp_num)
+        # then, they split the last dimension into query, key, value
+        # query.shape = (batch_size, seq_len, mp_num, embed_dim // mp_num // 3)
+        # then, they split into heads by collapsing mp_num and embed_dim // mp_num // 3,
+        # and then re splitting into heads
+        # query.shape = (batch_size, seq_len, num_heads, head_dim)
+        # finally, they permute seq_len and num_heads (after applying rotary)
+
+        local_dim = self.head_dim * self.num_attention_heads // mp_num
+        query, value, key = torch.split(qkv_split, local_dim, dim=-1)
+        query = self._split_heads(query, self.num_attention_heads, self.head_dim, mp_num=mp_num)
+        key = self._split_heads(key, self.num_attention_heads, self.head_dim, mp_num=mp_num)
+
+        value = self._split_heads(value, self.num_attention_heads, self.head_dim, mp_num=mp_num)
+        # value = value.permute(0, 2, 1, 3)
+
+        seq_len = max([l for l, in hidden_shape])
+        position_ids = torch.cat([
+            torch.arange(l, device=hidden_states.device) for l, in hidden_shape
+        ])
+        offset = torch.zeros(len(hidden_shape), dtype=torch.long, device=hidden_states.device)
+
+        if layer_past is not None:
+            past_key = layer_past[0]
+            past_value = layer_past[1]
+
+            position_ids = torch.cat([
+                torch.arange(batch_keys.shape[0], batch_keys.shape[0] + l, device=hidden_states.device) for ((l,), batch_keys) in zip(hidden_shape, past_key)
+            ])
+        seq_len = position_ids.max()+1
+
+        if self.rotary_dim is not None:
+            k_rot = key[:, :, : self.rotary_dim]
+            k_pass = key[:, :, self.rotary_dim :]
+
+            q_rot = query[:, :, : self.rotary_dim]
+            q_pass = query[:, :, self.rotary_dim :]
+
+            sincos = fixed_pos_embedding(k_rot, 1, seq_len=seq_len)
+            k_rot = apply_rotary_pos_emb_pos(k_rot, sincos, position_ids=position_ids)
+            q_rot = apply_rotary_pos_emb_pos(q_rot, sincos, position_ids=position_ids)
+
+            key = torch.cat([k_rot, k_pass], dim=-1)
+            query = torch.cat([q_rot, q_pass], dim=-1)
+        else:
+            sincos = fixed_pos_embedding(key, 1, seq_len=seq_len)
+            key = apply_rotary_pos_emb_pos(key, sincos, position_ids=position_ids)
+            query = apply_rotary_pos_emb_pos(query, sincos, position_ids=position_ids)
+
+        # key = key.permute(0, 2, 1, 3)
+        # query = query.permute(0, 2, 1, 3)
+
+        unpacked_keys = einops.unpack(key, hidden_shape, '* num_heads head_dim')
+        unpacked_values = einops.unpack(value, hidden_shape, '* num_heads head_dim')
+        if layer_past is not None:
+            unpacked_keys = [
+                torch.cat([batch_keys, k], dim=0)
+                for batch_keys, k in zip(past_key, unpacked_keys)
+            ]
+            unpacked_values = [
+                torch.cat([batch_values, v], dim=0)
+                for batch_values, v in zip(past_value, unpacked_values)
+            ]
+
+        if use_cache is True:
+            present = (unpacked_keys, unpacked_values)
+        else:
+            present = None
+        key = torch.cat(unpacked_keys, dim=0)
+        value = torch.cat(unpacked_values, dim=0)
+
+        # breakpoint()
+        attn_output = flash_attn_varlen_func(
+            query.to(torch.float16), key.to(torch.float16), value.to(torch.float16),
+            cu_seqlens_q=F.pad(torch.cumsum(torch.tensor([l for l, in hidden_shape], dtype=torch.int32), 0), (1, 0)).to(torch.int32).to(query.device), # needs a zero in front
+            cu_seqlens_k=F.pad(torch.cumsum(torch.tensor([k.shape[0] for k in present[0]], dtype=torch.int32), 0), (1, 0)).to(torch.int32).to(query.device), # needs a zero in front
+            max_seqlen_q=max([l for l, in hidden_shape]),
+            max_seqlen_k=max([k.shape[0] for k in present[0]]),
+        ).to(hidden_states.dtype) # [squashed_seq_len, num_heads, head_dim]
+
+        attn_output = self._merge_heads(attn_output, self.num_attention_heads, self.head_dim)
+
+        attn_output = self.out_proj(attn_output)
+        attn_output = self.resid_dropout(attn_output)
+
+        outputs = (attn_output, present)
+        assert not output_attentions, "output_attentions not supported with ragged batches"
+
+        return outputs  # a, present, (attentions)
     def forward(
         self,
         hidden_states,
@@ -165,15 +279,35 @@ class ProGenAttention(nn.Module):
         head_mask=None,
         use_cache=False,
         output_attentions=False,
+        hidden_shape=None,
     ):
-        # if self.flash_attention:
-        #     return self._forward_flash_attention(
-        #         hidden_states, attention_mask, layer_past, head_mask, use_cache, output_attentions
-        #     )
+        if self.ragged_batches:
+            return self._forward_ragged_batches(
+                hidden_states,
+                attention_mask=attention_mask,
+                layer_past=layer_past,
+                head_mask=head_mask,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                hidden_shape=hidden_shape
+            )
 
         qkv = self.qkv_proj(hidden_states)
         # TODO(enijkamp): factor out number of logical TPU-v3/v4 cores or make forward pass agnostic
         # mp_num = 4
+
+
+        # JH: this is super weird thing
+        # they're splitting the embed_dim by mp_num, so that initially we have
+        # qkv_split.shape = (batch_size, seq_len, mp_num, embed_dim // mp_num)
+        # then, they split the last dimension into query, key, value
+        # query.shape = (batch_size, seq_len, mp_num, embed_dim // mp_num // 3)
+        # then, they split into heads by collapsing mp_num and embed_dim // mp_num // 3,
+        # and then re splitting into heads
+        # query.shape = (batch_size, seq_len, num_heads, head_dim)
+        # finally, they permute seq_len and num_heads (after applying rotary)
+        
+        
         mp_num = 8
         qkv_split = qkv.reshape(qkv.shape[:-1] + (mp_num, -1))
 
@@ -270,6 +404,7 @@ class ProGenMLP(nn.Module):
 
         self.act = ACT2FN[config.activation_function]
         self.dropout = nn.Dropout(config.resid_pdrop)
+        self.ragged_batches = config.ragged_batches
 
     def forward(self, hidden_states):
         hidden_states = self.fc_in(hidden_states)
@@ -295,6 +430,7 @@ class ProGenBlock(nn.Module):
         head_mask=None,
         use_cache=False,
         output_attentions=False,
+        hidden_shape=None,
     ):
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
@@ -305,6 +441,7 @@ class ProGenBlock(nn.Module):
             head_mask=head_mask,
             use_cache=use_cache,
             output_attentions=output_attentions,
+            hidden_shape=hidden_shape,
         )
         attn_output = attn_outputs[0]  # output_attn: a, present, (attentions)
         outputs = attn_outputs[1:]
@@ -366,6 +503,8 @@ class ProGenModel(ProGenPreTrainedModel):
         # Model parallel
         self.model_parallel = False
         self.device_map = None
+
+        self.ragged_batches = config.ragged_batches
 
 
     def parallelize(self, device_map=None):
@@ -438,6 +577,7 @@ class ProGenModel(ProGenPreTrainedModel):
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         device = input_ids.device if input_ids is not None else inputs_embeds.device
+        original_attention_mask = attention_mask
 
         if token_type_ids is not None:
             token_type_ids = token_type_ids.view(-1, input_shape[-1])
@@ -455,24 +595,6 @@ class ProGenModel(ProGenPreTrainedModel):
             position_ids = torch.arange(past_length, input_shape[-1] + past_length, dtype=torch.long, device=device)
             position_ids = position_ids.unsqueeze(0).view(-1, input_shape[-1])
 
-        # Attention mask.
-        if attention_mask is not None:
-            assert batch_size > 0, "batch_size has to be defined and > 0"
-            attention_mask = attention_mask.view(batch_size, -1)
-            # We create a 3D attention mask from a 2D tensor mask.
-            # Sizes are [batch_size, 1, 1, to_seq_length]
-            # So we can broadcast to [batch_size, num_heads, from_seq_length, to_seq_length]
-            # this attention mask is more simple than the triangular masking of causal attention
-            # used in OpenAI GPT, we just need to prepare the broadcast dimension here.
-            attention_mask = attention_mask[:, None, None, :]
-
-            # Since attention_mask is 1.0 for positions we want to attend and 0.0 for
-            # masked positions, this operation will create a tensor which is 0.0 for
-            # positions we want to attend and -10000.0 for masked positions.
-            # Since we are adding it to the raw scores before the softmax, this is
-            # effectively the same as removing these entirely.
-            attention_mask = attention_mask.to(dtype=self.dtype)  # fp16 compatibility
-            attention_mask = (1.0 - attention_mask) * -10000.0
 
         # Prepare head mask if needed
         # 1.0 in head_mask indicate we keep the head
@@ -496,6 +618,40 @@ class ProGenModel(ProGenPreTrainedModel):
         presents = () if use_cache else None
         all_self_attentions = () if output_attentions else None
         all_hidden_states = () if output_hidden_states else None
+
+        if self.ragged_batches:
+            if attention_mask is not None:
+                assert attention_mask.shape == input_shape
+                hidden_states, hidden_shape = einops.pack([
+                    hidden_states[b][attention_mask[b].bool()]
+                    for b in range(batch_size)
+                ], '* dim')
+            else:
+                hidden_states, hidden_shape = einops.pack(
+                    [hidden_states[b] for b in range(batch_size)],
+                    '* dim'
+                )
+
+        
+        # Attention mask.
+        if attention_mask is not None:
+            assert batch_size > 0, "batch_size has to be defined and > 0"
+            attention_mask = attention_mask.view(batch_size, -1)
+            # We create a 3D attention mask from a 2D tensor mask.
+            # Sizes are [batch_size, 1, 1, to_seq_length]
+            # So we can broadcast to [batch_size, num_heads, from_seq_length, to_seq_length]
+            # this attention mask is more simple than the triangular masking of causal attention
+            # used in OpenAI GPT, we just need to prepare the broadcast dimension here.
+            attention_mask = attention_mask[:, None, None, :]
+
+            # Since attention_mask is 1.0 for positions we want to attend and 0.0 for
+            # masked positions, this operation will create a tensor which is 0.0 for
+            # positions we want to attend and -10000.0 for masked positions.
+            # Since we are adding it to the raw scores before the softmax, this is
+            # effectively the same as removing these entirely.
+            attention_mask = attention_mask.to(dtype=self.dtype)  # fp16 compatibility
+            attention_mask = (1.0 - attention_mask) * -10000.0
+
         for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):
 
             # Model parallel
@@ -543,6 +699,7 @@ class ProGenModel(ProGenPreTrainedModel):
                     head_mask=head_mask[i],
                     use_cache=use_cache,
                     output_attentions=output_attentions,
+                    hidden_shape=hidden_shape if self.ragged_batches else None,
                 )
 
             hidden_states = outputs[0]
@@ -559,7 +716,13 @@ class ProGenModel(ProGenPreTrainedModel):
                         hidden_states = hidden_states.to("cuda:" + str(k + 1))
 
         hidden_states = self.ln_f(hidden_states)
-
+        if self.ragged_batches:
+            final_hidden_states = torch.zeros_like(inputs_embeds)
+            if original_attention_mask is not None:
+                final_hidden_states[original_attention_mask.bool()] = hidden_states
+                hidden_states = final_hidden_states
+            else:
+                hidden_states = einops.rearrange(hidden_states, '(batch seq) d -> batch seq d', batch=batch_size)
         hidden_states = hidden_states.view(*output_shape)
         # Add last hidden state
         if output_hidden_states:

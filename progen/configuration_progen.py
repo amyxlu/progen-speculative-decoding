@@ -46,6 +46,7 @@ class ProGenConfig(PretrainedConfig):
         bos_token_id=50256,
         eos_token_id=50256,
         flash_attention=False,
+        ragged_batches=False,
         **kwargs
     ):
         super().__init__(bos_token_id=bos_token_id, eos_token_id=eos_token_id, **kwargs)
@@ -68,6 +69,7 @@ class ProGenConfig(PretrainedConfig):
         self.scale_attn_weights = scale_attn_weights
         self.use_cache = use_cache
         self.flash_attention = flash_attention
+        self.ragged_batches = ragged_batches
 
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id

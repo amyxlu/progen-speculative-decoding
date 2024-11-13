@@ -14,7 +14,7 @@ To download checkpoints (note: use `sfr-progen-research` instead of `anon-progen
 ```
 model=progen2-small
 wget -P checkpoints/${model} https://storage.googleapis.com/sfr-progen-research/checkpoints/${model}.tar.gz
-tar -xvf checkpoints/${model}/${model}.tar.gz -C checkpoints/${model}/
+tar -xvf /data/fjiahai/checkpoints/${model}/${model}.tar.gz -C checkpoints/${model}/
 ```
 
 Repeat for `model=progen2-xlarge`.
