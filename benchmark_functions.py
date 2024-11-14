@@ -1,8 +1,4 @@
 import torch
-import triton.testing
-
-import torch
-
 
 # Adapted from:
 # https://github.com/triton-lang/triton/blob/57643b3f4746b3f53334fd6ce8020dd6c902c7f4/python/triton/testing.py#L95
@@ -26,7 +22,6 @@ def custom_do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, f
     :type fast_flush: bool
     """
     assert return_mode in ["min", "max", "mean", "median"]
-    import torch
 
     #di = torch._dynamo.device_interface.get_interface_for_device(device_type)
     # The above line requires torch 2.0 (torch dynamo) but I devlieve we can replace it with the following for torch 1.9
