@@ -7,7 +7,7 @@
 import argparse
 import torch
 
-from progen.sampling import sample, sample_vllm, cross_entropy, truncate
+from progen.sampling import compute_prompt_cross_entropy_vllm, sample, sample_vllm, cross_entropy, truncate
 from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time
 
 
@@ -76,14 +76,11 @@ def main():
 
         with print_time('sanity cross-entropy'):
 
-            def ce(tokens):
+            def ce(model, tokenizer, tokens, device):
                 with torch.no_grad():
                     with torch.cuda.amp.autocast(enabled=args.fp16):
                         target = torch.tensor(tokenizer.encode(tokens).ids).to(device)
-                        if args.use_vllm:
-                            raise NotImplementedError
-                        else:
-                            logits = model(target, labels=target).logits
+                        logits = model(target, labels=target).logits
 
                         # shift
                         logits = logits[:-1, ...]
@@ -105,8 +102,12 @@ def main():
                 'progen2-BFD90': (x_bfd90, 1.3),
             }
 
-            ce_eval = ce(checkpoint_x_ce[args.model][0])
-            ce_target = checkpoint_x_ce[args.model][1]
+            prompt, ce_target = checkpoint_x_ce[args.model]
+
+            if args.use_vllm:
+                ce_eval = compute_prompt_cross_entropy_vllm(model, prompt)
+            else:
+                ce_eval = ce(model, tokenizer, prompt, device)
 
             print(ce_target, ce_eval, abs(ce_eval - ce_target))
 

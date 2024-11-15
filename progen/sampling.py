@@ -8,6 +8,7 @@ import time
 import random
 import torch
 
+import numpy as np
 from vllm import LLM, SamplingParams
 from vllm.inputs.data import TokensPrompt
 
@@ -63,3 +64,29 @@ def truncate(sample, terminals):
 
 def cross_entropy(logits, target, reduction='mean'):
     return torch.nn.functional.cross_entropy(input=logits, target=target, weight=None, size_average=None, reduce=None, reduction=reduction)
+
+
+def compute_prompt_cross_entropy_vllm(llm: LLM, prompt: str) -> float:
+    """Computes the cross-entropy of a prompt with the model.
+
+    The prompt should already be prepended with either a 1 or 2 token.
+    """
+    # Set prompt_logprobs=0 to only compute the logprobs of the prompt tokens.
+    # Set max_tokens=1 to only generate one token for speed.
+    sampling_params = SamplingParams(max_tokens=1, prompt_logprobs=0)
+    output = llm.generate(prompt, sampling_params)
+    # There should only be one output sequence.
+    assert len(output) == 1
+    # The prompt logprobs should be the same length as the prompt.
+    assert len(output[0].prompt_logprobs) == len(prompt)
+
+    prompt_logprobs = []
+    # Skip the first logprob, which is None because it corresponds to the first token.
+    # Each subsequent logprob is a dict of length 1 where the key is the token ID and
+    # the value is a Logprob object.
+    for i, token_id_to_logprob in enumerate(output[0].prompt_logprobs[1:], start=1):
+        assert len(token_id_to_logprob) == 1
+        logprob = list(token_id_to_logprob.values())[0].logprob
+        prompt_logprobs.append(logprob)
+
+    return -np.mean(prompt_logprobs)
