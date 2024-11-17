@@ -88,15 +88,29 @@ class ProGenAttention(nn.Module):
             quant_config=quant_config,
         )
 
+        # ProGen2 uses GPT-J-style rotary embeddings, not Neox-style, so set
+        # is_neox_style=False.
+        # ProGen2 computes RoPE in fp32, so set dtype=torch.float32.
         self.rotary_emb = get_rope(
             self.head_dim,
             rotary_dim=config.rotary_dim,
             max_position=config.max_position_embeddings,
             base=ROPE_THETA,
-            # TODO: are these two args correct?
-            is_neox_style=True,
+            is_neox_style=False,
             rope_scaling=None,
+            dtype=torch.float32,
         )
+
+    def _split_heads(
+        self, x: torch.Tensor, num_heads: int, head_dim: int, mp_num: int
+    ) -> torch.Tensor:
+        # This function is copied from the original ProGen2 model code.
+        # x: [(batch_size), seq_len, mp_num, hidden_size / mp_num]
+        # reshaped: [(batch_size), seq_len, mp_num, num_heads / mp_num, head_dim]
+        reshaped = x.reshape(x.shape[:-1] + (num_heads // mp_num, head_dim))
+        # reshaped: [(batch_size), seq_len, num_heads, head_dim]
+        reshaped = reshaped.reshape(x.shape[:-2] + (-1,) + reshaped.shape[-1:])
+        return reshaped
 
     def forward(
         self,
@@ -105,11 +119,60 @@ class ProGenAttention(nn.Module):
         kv_cache: torch.Tensor,
         attn_metadata: AttentionMetadata,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
-        q, k, v = qkv.chunk(3, dim=-1)
-        q, k = self.rotary_emb(positions, q, k)
+        qkv, _ = self.qkv_proj(
+            hidden_states
+        )  # [(batch_size), seq_len, 3 * hidden_size]
+        # TODO: remove commented out torch.save calls after debugging is complete.
+        # torch.save(qkv, "qkv.pt")
+
+        # TODO: is this more complex splitting and reshaping (from original model code)
+        # necessary? Can it be simplified?
+        # NOTE: this complex splitting and reshaping code is copied from the original
+        # ProGen2 model code to ensure compatibility. Simply doing
+        # `q, k, v = torch.chunk(qkv, 3, dim=-1)` does not work.
+        mp_num = 8
+        # [(batch_size), seq_len, mp_num, 3 * hidden_size / mp_num]
+        qkv_split = qkv.reshape(qkv.shape[:-1] + (mp_num, -1))
+        # torch.save(qkv_split, "qkv_split.pt")
+
+        # q, v, k are [(batch_size), seq_len, mp_num, hidden_size / mp_num]
+        q, v, k = torch.chunk(qkv_split, 3, dim=-1)
+
+        # [(batch_size), seq_len, num_heads, head_dim]
+        k = self._split_heads(k, self.num_heads, self.head_dim, mp_num=mp_num)
+        q = self._split_heads(q, self.num_heads, self.head_dim, mp_num=mp_num)
+        v = self._split_heads(v, self.num_heads, self.head_dim, mp_num=mp_num)
+
+        # torch.save(q, "q_pre_rope.pt")
+        # torch.save(k, "k_pre_rope.pt")
+        # torch.save(v, "v_pre_rope.pt")
+
+        # TODO: can we do `q, k = self.rotary_emb(positions, q, k)` instead?
+        # It currently raises an error:
+        # RuntimeError: Error in model execution: CUDA error: an illegal memory access was encountered
+        # Cast q and k to float32 before passing to rotary_emb to make the computation
+        # happen in fp32 to match the original ProGen2 model. Without this cast,
+        # rotary_emb will convert the sin/cos positional embeddings to the dtype of q
+        # and k (fp16 by default).
+        q, k = self.rotary_emb.forward_native(
+            positions, q.to(torch.float32), k.to(torch.float32)
+        )
+        # torch.save(q, "q_post_rope.pt")
+        # torch.save(k, "k_post_rope.pt")
+
+        # TODO: is this reshape needed?
+        # Cast q, k, v back to the original dtype (fp16 by default) before passing to
+        # the attention layer because FlashAttion (default attention backend) expects
+        # the input tensors to be in fp16 or bfloat16.
+        q = q.reshape(q.shape[:-2] + (-1,)).to(qkv.dtype)
+        v = v.reshape(v.shape[:-2] + (-1,)).to(qkv.dtype)
+        k = k.reshape(k.shape[:-2] + (-1,)).to(qkv.dtype)
+
         attn_output = self.attn(q, k, v, kv_cache, attn_metadata)
+        # torch.save(attn_output, "attn_output.pt")
+
         output, _ = self.out_proj(attn_output)
+        # torch.save(output, "attn_output_post_proj.pt")
         return output
 
 
