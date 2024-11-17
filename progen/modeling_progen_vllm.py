@@ -135,12 +135,13 @@ class ProGenAttention(nn.Module):
         qkv_split = qkv.reshape(qkv.shape[:-1] + (mp_num, -1))
         # torch.save(qkv_split, "qkv_split.pt")
 
+        # NOTE: despite the name, qkv stores the tensors in the order q, v, k.
         # q, v, k are [(batch_size), seq_len, mp_num, hidden_size / mp_num]
         q, v, k = torch.chunk(qkv_split, 3, dim=-1)
 
         # [(batch_size), seq_len, num_heads, head_dim]
-        k = self._split_heads(k, self.num_heads, self.head_dim, mp_num=mp_num)
         q = self._split_heads(q, self.num_heads, self.head_dim, mp_num=mp_num)
+        k = self._split_heads(k, self.num_heads, self.head_dim, mp_num=mp_num)
         v = self._split_heads(v, self.num_heads, self.head_dim, mp_num=mp_num)
 
         # torch.save(q, "q_pre_rope.pt")
