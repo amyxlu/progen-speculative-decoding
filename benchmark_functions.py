@@ -82,6 +82,11 @@ def custom_do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, f
     return torch.mean(times).item(), torch.std(times).item()
 
 
+def flop_counter(model, input_data):
+    from fvcore.nn import FlopCountAnalysis
+    flops = FlopCountAnalysis(model, input_data)
+    return flops
+
 def main():
     # Initialize your model and input data. Put them on the correct device!
     model = torch.nn.Sequential(
@@ -101,6 +106,11 @@ def main():
     #avg_time, std_dev = triton.testing.do_bench(forward_pass)
     avg_time, std_dev = custom_do_bench(forward_pass)
     print(f"Average time: {avg_time} ms, Standard deviation: {std_dev} ms")
+
+    flops = flop_counter(model, input_data)
+    print(f"FLOPs: {flops.total()}")
+    print("By module and operator:", flops.by_module_and_operator())
+
 
 if __name__ == "__main__":
     main()
