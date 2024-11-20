@@ -3,7 +3,7 @@ import torch.nn as nn
 from typing import Iterable, List, Optional, Tuple, Union
 
 from vllm.attention import Attention, AttentionMetadata
-from vllm.config import CacheConfig
+from vllm.config import CacheConfig, ModelConfig, VllmConfig
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import get_act_fn
@@ -51,14 +51,17 @@ def maybe_prefix(prefix: str, name: str) -> str:
 class ProGenAttention(nn.Module):
     def __init__(
         self,
-        config: ProGenConfig,
+        config: ModelConfig,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ):
         super().__init__()
-        self.hidden_size = config.hidden_size
-        total_num_heads = config.num_attention_heads
+        hf_config = config.hf_text_config
+        self.hidden_size = config.get_hidden_size()
+        # TODO: maybe replace with `config.get_num_attention_heads()` and pass in the
+        # parallel_config.
+        total_num_heads = hf_config.num_attention_heads
         tensor_model_parallel_world_size = get_tensor_model_parallel_world_size()
         assert total_num_heads % tensor_model_parallel_world_size == 0
         self.num_heads = total_num_heads // tensor_model_parallel_world_size
@@ -93,8 +96,8 @@ class ProGenAttention(nn.Module):
         # ProGen2 computes RoPE in fp32, so set dtype=torch.float32.
         self.rotary_emb = get_rope(
             self.head_dim,
-            rotary_dim=config.rotary_dim,
-            max_position=config.max_position_embeddings,
+            rotary_dim=hf_config.rotary_dim,
+            max_position=hf_config.max_position_embeddings,
             base=ROPE_THETA,
             is_neox_style=False,
             rope_scaling=None,
@@ -181,12 +184,13 @@ class ProGenMLP(nn.Module):
     def __init__(
         self,
         intermediate_size: int,
-        config: ProGenConfig,
+        config: ModelConfig,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ):
         super().__init__()
-        hidden_size = config.hidden_size
+        hf_config = config.hf_text_config
+        hidden_size = config.get_hidden_size()
         self.fc_in = ColumnParallelLinear(
             hidden_size,
             intermediate_size,
@@ -201,7 +205,7 @@ class ProGenMLP(nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.fc_out",
         )
-        self.act = get_act_fn(config.activation_function)
+        self.act = get_act_fn(hf_config.activation_function)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         hidden_states, _ = self.fc_in(hidden_states)
@@ -213,15 +217,16 @@ class ProGenMLP(nn.Module):
 class ProGenBlock(nn.Module):
     def __init__(
         self,
-        config: ProGenConfig,
+        config: ModelConfig,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ):
         super().__init__()
-        hidden_size = config.hidden_size
-        inner_dim = config.n_inner if config.n_inner is not None else 4 * hidden_size
-        self.ln_1 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
+        hf_config = config.hf_text_config
+        hidden_size = config.get_hidden_size()
+        inner_dim = hf_config.n_inner if hf_config.n_inner is not None else 4 * hidden_size
+        self.ln_1 = nn.LayerNorm(hidden_size, eps=hf_config.layer_norm_epsilon)
         self.attn = ProGenAttention(config)
         self.mlp = ProGenMLP(inner_dim, config)
 
@@ -249,27 +254,31 @@ class ProGenBlock(nn.Module):
 class ProGenModel(nn.Module):
     def __init__(
         self,
-        config: ProGenConfig,
+        config: ModelConfig,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ):
         super().__init__()
+        hf_config = config.hf_text_config
         self.config = config
-        self.vocab_size = config.vocab_size
-        self.embed_dim = config.hidden_size
+        vocab_size = config.get_vocab_size()
+        self.vocab_size = vocab_size
+        self.embed_dim = config.get_hidden_size()
 
-        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim)
+        self.wte = VocabParallelEmbedding(vocab_size, self.embed_dim)
+        # TODO: should this use `config.get_num_layers()` instead of
+        # `hf_config.num_hidden_layers`?
         self.start_layer, self.end_layer, self.h = make_layers(
-            config.num_hidden_layers,
+            hf_config.num_hidden_layers,
             lambda prefix: ProGenBlock(
                 config, cache_config, quant_config, prefix=prefix
             ),
             prefix=f"{prefix}.h",
         )
-        self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
+        self.ln_f = nn.LayerNorm(self.embed_dim, eps=hf_config.layer_norm_epsilon)
         self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
-            ["hidden_states"], config.n_embd
+            ["hidden_states"], self.embed_dim
         )
 
     def forward(
@@ -302,21 +311,23 @@ class ProGenModel(nn.Module):
 class ProGenForCausalLM(nn.Module):
     def __init__(
         self,
-        config: ProGenConfig,
-        cache_config: Optional[CacheConfig] = None,
-        quant_config: Optional[QuantizationConfig] = None,
+        vllm_config: VllmConfig = None,
         prefix: str = "",
     ):
         super().__init__()
-        self.config = config
+        model_config = vllm_config.model_config
+        self.config = model_config
         self.transformer = ProGenModel(
-            config,
-            cache_config=cache_config,
-            quant_config=quant_config,
+            model_config,
+            cache_config=vllm_config.cache_config,
+            quant_config=vllm_config.quant_config,
             prefix=maybe_prefix(prefix, "transformer"),
         )
-        self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size, bias=True)
-        self.logits_processor = LogitsProcessor(config.vocab_size)
+        vocab_size = model_config.get_vocab_size()
+        self.lm_head = ParallelLMHead(
+            vocab_size, model_config.get_hidden_size(), bias=True
+        )
+        self.logits_processor = LogitsProcessor(vocab_size)
         self.sampler = Sampler()
         self.make_empty_intermediate_tensors = (
             self.transformer.make_empty_intermediate_tensors

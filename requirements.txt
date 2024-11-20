@@ -1,9 +1,6 @@
 # --find-links https://download.pytorch.org/whl/torch_stable.html
 # torch==1.9.0+cu111
-# Most recent version of vllm has an unexplained bug when running sampling. Don't use it
-# for now. Use v0.6.3.post1 instead.
-# vllm @ https://vllm-wheels.s3.us-west-2.amazonaws.com/nightly/vllm-1.0.0.dev-cp38-abi3-manylinux1_x86_64.whl
-vllm==v0.6.3.post1
+vllm
 transformers #==4.16.2
 tokenizers #==0.10.3
 accelerate
