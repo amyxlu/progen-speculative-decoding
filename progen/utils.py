@@ -45,8 +45,25 @@ def set_seed(seed, deterministic=True):
 # model
 
 
-def create_model(ckpt, fp16=True, use_vllm=False, tokenizer=None):
+def create_model(
+    ckpt,
+    fp16=True,
+    use_vllm=False,
+    tokenizer=None,
+    speculative_model=None,
+    num_speculative_tokens=None,
+    ngram_prompt_lookup_max=4,
+):
     if use_vllm:
+        assert (speculative_model is None) == (num_speculative_tokens is None), (
+            "speculative_model and num_speculative_tokens must be both None or both "
+            "not None"
+        )
+        if speculative_model is not None:
+            assert (
+                num_speculative_tokens > 0
+            ), "num_speculative_tokens must be greater than 0"
+
         from vllm import ModelRegistry
         ModelRegistry.register_model("ProGenForCausalLM", ProGenForCausalLMVLLM)
         # hf_overrides only available in latest vllm version (after v0.6.3.post1)
@@ -57,8 +74,9 @@ def create_model(ckpt, fp16=True, use_vllm=False, tokenizer=None):
             dtype="float16" if fp16 else "auto",
             skip_tokenizer_init=tokenizer is None,
             trust_remote_code=False,
-            # max_model_len=512,
-            # max_num_batched_tokens=512,
+            speculative_model=speculative_model,
+            num_speculative_tokens=num_speculative_tokens,
+            ngram_prompt_lookup_max=ngram_prompt_lookup_max,
         )
     if fp16:
         return ProGenForCausalLM.from_pretrained(ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True)

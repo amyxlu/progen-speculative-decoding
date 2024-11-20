@@ -20,6 +20,7 @@ def main():
     models_2B = [ 'progen2-large', 'progen2-BFD90' ]
     models_6B = [ 'progen2-xlarge' ]
     models = models_151M + models_754M + models_2B + models_6B
+    speculative_models = models + ["[ngram]"]
 
     # (1) params
 
@@ -37,6 +38,9 @@ def main():
     parser.add_argument('--sanity', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--use_vllm', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--separate_tokenizer', default=False, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--speculative_model', type=str, choices=speculative_models, default=None)
+    parser.add_argument('--num_speculative_tokens', type=int, default=None)
+    parser.add_argument('--ngram_prompt_lookup_max', type=int, default=4)
     args = parser.parse_args()
 
 
@@ -51,6 +55,10 @@ def main():
 
     device = torch.device(args.device)
     ckpt = f'./checkpoints/{args.model}'
+    spec_model = args.speculative_model
+    if spec_model is not None:
+        if spec_model in models:
+            spec_model = f'./checkpoints/{spec_model}'
 
     if device.type == 'cpu':
         print('falling back to fp32')
@@ -65,10 +73,17 @@ def main():
         tokenizer = None
 
     with print_time('loading parameters'):
-        model = create_model(ckpt=ckpt, fp16=args.fp16, use_vllm=args.use_vllm, tokenizer="tokenizer" if tokenizer is None else None)
+        model = create_model(
+            ckpt=ckpt,
+            fp16=args.fp16,
+            use_vllm=args.use_vllm,
+            tokenizer="tokenizer" if tokenizer is None else None,
+            speculative_model=spec_model,
+            num_speculative_tokens=args.num_speculative_tokens,
+            ngram_prompt_lookup_max=args.ngram_prompt_lookup_max,
+        )
         if not args.use_vllm:
             model = model.to(device)
-
 
     # (4) sanity
 
@@ -130,7 +145,6 @@ def main():
             print()
             print(i)
             print(truncation)
-
 
 
 if __name__ == '__main__':
