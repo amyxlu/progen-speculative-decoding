@@ -46,6 +46,7 @@ class ProGenConfig(PretrainedConfig):
         use_cache=True,
         bos_token_id=50256,
         eos_token_id=50256,
+        rope_dtype="float32",
         **kwargs
     ):
         super().__init__(bos_token_id=bos_token_id, eos_token_id=eos_token_id, **kwargs)
@@ -70,6 +71,8 @@ class ProGenConfig(PretrainedConfig):
 
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
+
+        self.rope_dtype = rope_dtype
 
     @property
     def max_position_embeddings(self):

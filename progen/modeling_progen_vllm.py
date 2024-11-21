@@ -93,6 +93,13 @@ class ProGenAttention(nn.Module):
 
         # ProGen2 uses GPT-J-style rotary embeddings, not Neox-style, so set
         # is_neox_style=False.
+        rope_dtype = hf_config.rope_dtype
+        if rope_dtype == "float32":
+            rope_dtype = torch.float32
+        elif rope_dtype == "float16":
+            rope_dtype = torch.float16
+        else:
+            raise ValueError(f"Unsupported rope_dtype: {rope_dtype}. Must be float32 or float16.")
         # ProGen2 computes RoPE in fp32, so set dtype=torch.float32.
         self.rotary_emb = get_rope(
             self.head_dim,
@@ -101,7 +108,7 @@ class ProGenAttention(nn.Module):
             base=ROPE_THETA,
             is_neox_style=False,
             rope_scaling=None,
-            dtype=torch.float32,
+            dtype=rope_dtype,
         )
 
     def _split_heads(
@@ -159,7 +166,7 @@ class ProGenAttention(nn.Module):
         # rotary_emb will convert the sin/cos positional embeddings to the dtype of q
         # and k (fp16 by default).
         q, k = self.rotary_emb.forward_native(
-            positions, q.to(torch.float32), k.to(torch.float32)
+            positions, q.to(self.rotary_emb.dtype), k.to(self.rotary_emb.dtype)
         )
         # torch.save(q, "q_post_rope.pt")
         # torch.save(k, "k_post_rope.pt")

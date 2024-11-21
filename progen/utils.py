@@ -53,6 +53,7 @@ def create_model(
     speculative_model=None,
     num_speculative_tokens=None,
     ngram_prompt_lookup_max=4,
+    rope_dtype="float32",
 ):
     if use_vllm:
         assert (speculative_model is None) == (num_speculative_tokens is None), (
@@ -66,18 +67,20 @@ def create_model(
 
         from vllm import ModelRegistry
         ModelRegistry.register_model("ProGenForCausalLM", ProGenForCausalLMVLLM)
-        # hf_overrides only available in latest vllm version (after v0.6.3.post1)
-        # hf_overrides = {"use_vllm": True}
+        hf_overrides = {"rope_dtype": rope_dtype}
         return LLM(
             model=ckpt,
             tokenizer=tokenizer,
             dtype="float16" if fp16 else "auto",
             skip_tokenizer_init=tokenizer is None,
             trust_remote_code=False,
+            hf_overrides=hf_overrides,
             speculative_model=speculative_model,
             num_speculative_tokens=num_speculative_tokens,
             ngram_prompt_lookup_max=ngram_prompt_lookup_max,
         )
+
+    assert rope_dtype == "float32", "rope_dtype must be float32 when not using VLLM"
     if fp16:
         return ProGenForCausalLM.from_pretrained(ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True)
     else:

@@ -41,6 +41,7 @@ def main():
     parser.add_argument('--speculative_model', type=str, choices=speculative_models, default=None)
     parser.add_argument('--num_speculative_tokens', type=int, default=None)
     parser.add_argument('--ngram_prompt_lookup_max', type=int, default=4)
+    parser.add_argument('--rope_dtype', type=str, default='float32')
     args = parser.parse_args()
 
 
@@ -81,6 +82,7 @@ def main():
             speculative_model=spec_model,
             num_speculative_tokens=args.num_speculative_tokens,
             ngram_prompt_lookup_max=args.ngram_prompt_lookup_max,
+            rope_dtype=args.rope_dtype,
         )
         if not args.use_vllm:
             model = model.to(device)
