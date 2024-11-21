@@ -113,12 +113,11 @@ class ProGenAttention(nn.Module):
             dtype=rope_dtype,
         )
 
-    def _split_heads(
-        self, x: torch.Tensor, num_heads: int, head_dim: int, mp_num: int
-    ) -> torch.Tensor:
+    def _split_heads(self, x: torch.Tensor, head_dim: int) -> torch.Tensor:
         # This function is slightly modified from the original ProGen2 model code by
         # simplifying two reshape ops into one.
-        # Original:
+        # Original args: x: torch.Tensor, num_heads: int, head_dim: int, mp_num: int
+        # Original body:
         # x: [(batch_size), seq_len, mp_num, hidden_size / mp_num]
         # reshaped: [(batch_size), seq_len, mp_num, num_heads / mp_num, head_dim]
         # reshaped = x.reshape(x.shape[:-1] + (num_heads // mp_num, head_dim))
@@ -143,7 +142,7 @@ class ProGenAttention(nn.Module):
         # necessary? Can it be simplified?
         # NOTE: this complex splitting and reshaping code is copied from the original
         # ProGen2 model code to ensure compatibility. Simply doing
-        # `q, k, v = torch.chunk(qkv, 3, dim=-1)` does not work.
+        # `q, v, k = torch.chunk(qkv, 3, dim=-1)` does not work.
         mp_num = 8
         # [(batch_size), seq_len, mp_num, 3 * hidden_size / mp_num]
         qkv_split = qkv.reshape(qkv.shape[:-1] + (mp_num, -1))
@@ -154,9 +153,9 @@ class ProGenAttention(nn.Module):
         q, v, k = torch.chunk(qkv_split, 3, dim=-1)
 
         # [(batch_size), seq_len, num_heads, head_dim]
-        q = self._split_heads(q, self.num_heads, self.head_dim, mp_num=mp_num)
-        k = self._split_heads(k, self.num_heads, self.head_dim, mp_num=mp_num)
-        v = self._split_heads(v, self.num_heads, self.head_dim, mp_num=mp_num)
+        q = self._split_heads(q, self.head_dim)
+        k = self._split_heads(k, self.head_dim)
+        v = self._split_heads(v, self.head_dim)
 
         # torch.save(q, "q_pre_rope.pt")
         # torch.save(k, "k_pre_rope.pt")
@@ -169,6 +168,7 @@ class ProGenAttention(nn.Module):
         # happen in fp32 to match the original ProGen2 model. Without this cast,
         # rotary_emb will convert the sin/cos positional embeddings to the dtype of q
         # and k (fp16 by default).
+        # [(batch_size), seq_len, num_heads, head_dim]
         q, k = self.rotary_emb.forward_native(
             positions, q.to(self.rotary_emb.dtype), k.to(self.rotary_emb.dtype)
         )
@@ -179,6 +179,7 @@ class ProGenAttention(nn.Module):
         # Cast q, k, v back to the original dtype (fp16 by default) before passing to
         # the attention layer because FlashAttion (default attention backend) expects
         # the input tensors to be in fp16 or bfloat16.
+        # [(batch_size), seq_len, num_heads * head_dim]
         q = q.reshape(q.shape[:-2] + (-1,)).to(qkv.dtype)
         v = v.reshape(v.shape[:-2] + (-1,)).to(qkv.dtype)
         k = k.reshape(k.shape[:-2] + (-1,)).to(qkv.dtype)
