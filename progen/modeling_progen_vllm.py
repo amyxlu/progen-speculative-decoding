@@ -99,7 +99,9 @@ class ProGenAttention(nn.Module):
         elif rope_dtype == "float16":
             rope_dtype = torch.float16
         else:
-            raise ValueError(f"Unsupported rope_dtype: {rope_dtype}. Must be float32 or float16.")
+            raise ValueError(
+                f"Unsupported rope_dtype: {rope_dtype}. Must be float32 or float16."
+            )
         # ProGen2 computes RoPE in fp32, so set dtype=torch.float32.
         self.rotary_emb = get_rope(
             self.head_dim,
@@ -114,13 +116,16 @@ class ProGenAttention(nn.Module):
     def _split_heads(
         self, x: torch.Tensor, num_heads: int, head_dim: int, mp_num: int
     ) -> torch.Tensor:
-        # This function is copied from the original ProGen2 model code.
+        # This function is slightly modified from the original ProGen2 model code by
+        # simplifying two reshape ops into one.
+        # Original:
         # x: [(batch_size), seq_len, mp_num, hidden_size / mp_num]
         # reshaped: [(batch_size), seq_len, mp_num, num_heads / mp_num, head_dim]
-        reshaped = x.reshape(x.shape[:-1] + (num_heads // mp_num, head_dim))
+        # reshaped = x.reshape(x.shape[:-1] + (num_heads // mp_num, head_dim))
         # reshaped: [(batch_size), seq_len, num_heads, head_dim]
-        reshaped = reshaped.reshape(x.shape[:-2] + (-1,) + reshaped.shape[-1:])
-        return reshaped
+        # reshaped = reshaped.reshape(x.shape[:-2] + (-1,) + reshaped.shape[-1:])
+
+        return x.reshape(x.shape[:-2] + (-1, head_dim))
 
     def forward(
         self,
@@ -129,9 +134,8 @@ class ProGenAttention(nn.Module):
         kv_cache: torch.Tensor,
         attn_metadata: AttentionMetadata,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(
-            hidden_states
-        )  # [(batch_size), seq_len, 3 * hidden_size]
+        # [(batch_size), seq_len, 3 * hidden_size]
+        qkv, _ = self.qkv_proj(hidden_states)
         # TODO: remove commented out torch.save calls after debugging is complete.
         # torch.save(qkv, "qkv.pt")
 
@@ -232,7 +236,9 @@ class ProGenBlock(nn.Module):
         super().__init__()
         hf_config = config.hf_text_config
         hidden_size = config.get_hidden_size()
-        inner_dim = hf_config.n_inner if hf_config.n_inner is not None else 4 * hidden_size
+        inner_dim = (
+            hf_config.n_inner if hf_config.n_inner is not None else 4 * hidden_size
+        )
         self.ln_1 = nn.LayerNorm(hidden_size, eps=hf_config.layer_norm_epsilon)
         self.attn = ProGenAttention(config)
         self.mlp = ProGenMLP(inner_dim, config)
