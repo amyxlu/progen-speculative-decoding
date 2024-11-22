@@ -6,12 +6,17 @@
 
 import argparse
 import json
+import pathlib
 
 import torch
 
 import benchmark_functions
 from progen.sampling import compute_prompt_cross_entropy_vllm, sample, sample_vllm, cross_entropy, truncate
 from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time, get_benchmark_results_save_path
+
+
+def none_or_val(value, dtype=str):
+    return None if value == 'None' else dtype(value)
 
 
 def main():
@@ -23,7 +28,7 @@ def main():
     models_2B = [ 'progen2-large', 'progen2-BFD90' ]
     models_6B = [ 'progen2-xlarge' ]
     models = models_151M + models_754M + models_2B + models_6B
-    speculative_models = models + ["[ngram]"]
+    speculative_models = models + ["[ngram]", None]
 
     # (1) params
 
@@ -43,8 +48,8 @@ def main():
     parser.add_argument('--benchmark', default=False, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--use_vllm', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--separate_tokenizer', default=False, type=lambda x: (str(x).lower() == 'true'))
-    parser.add_argument('--speculative_model', type=str, choices=speculative_models, default=None)
-    parser.add_argument('--num_speculative_tokens', type=int, default=None)
+    parser.add_argument('--speculative_model', type=none_or_val, choices=speculative_models, default=None)
+    parser.add_argument('--num_speculative_tokens', type=lambda x: none_or_val(x, dtype=int), default=None)
     parser.add_argument('--ngram_prompt_lookup_max', type=int, default=4)
     parser.add_argument('--rope_dtype', type=str, default='float32')
     args = parser.parse_args()
@@ -157,7 +162,7 @@ def main():
 
     if args.benchmark:
         if args.use_vllm:
-            assert tokenizer is not None, 'Use --separate_tokenizer with --benchmark for vllm models'
+            assert tokenizer is None, 'Use --separate_tokenizer=False with --benchmark=True for vllm models'
             results = benchmark_functions.benchmark_vllm_model(
                 model,
                 tokenizer,
@@ -182,6 +187,8 @@ def main():
             max_len=args.max_length,
             speculative_model=args.speculative_model,
         )
+        if not pathlib.Path(save_path).parent.exists():
+            pathlib.Path(save_path).parent.mkdir(parents=True)
         with open(save_path, 'w') as f:
             json.dump(results, f)
 

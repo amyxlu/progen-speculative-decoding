@@ -122,9 +122,13 @@ def benchmark_vllm_model(
         temperature=temp,
         top_p=top_p,
         max_tokens=max_length,
+        detokenize=False,  # Do not detokenize for benchmarking
     )
-    input_ids = torch.tensor(tokenizer.encode(context).ids).view([1, -1]).to(device)
-    prompts = TokensPrompt(prompt_token_ids=input_ids)
+    if tokenizer is None:
+        prompts = context
+    else:
+        input_ids = torch.tensor(tokenizer.encode(context).ids).view([1, -1]).to(device)
+        prompts = TokensPrompt(prompt_token_ids=input_ids)
 
     def generate():
         model.generate(prompts, sampling_params)

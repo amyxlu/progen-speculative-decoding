@@ -2,6 +2,7 @@ import random
 import time
 import os
 import abc
+import datetime
 from typing import Tuple, Union
 
 import torch
@@ -42,11 +43,16 @@ def set_seed(seed, deterministic=True):
 
 
 def get_benchmark_results_save_path(
-    root_dir, model_name, use_vllm, num_samples, max_len, speculative_model
+    root_dir, model_name, use_vllm, num_samples, max_len, speculative_model,
+    add_timestamp=True
 ):
-    path = f"{model_name}_vllm_{use_vllm}_samples_{num_samples}_len_{max_len}"
+    path = f"{model_name}/vllm_{use_vllm}_samples_{num_samples}_len_{max_len}"
     if speculative_model is not None:
         path += f"_spec_{speculative_model}"
+
+    if add_timestamp:
+        path += f"-{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+
     path = f"{path}.json"
     return os.path.join(root_dir, path)
 
