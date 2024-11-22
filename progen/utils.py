@@ -41,6 +41,16 @@ def set_seed(seed, deterministic=True):
         torch.backends.cudnn.benchmark = not deterministic
 
 
+def get_benchmark_results_save_path(
+    root_dir, model_name, use_vllm, num_samples, max_len, speculative_model
+):
+    path = f"{model_name}_vllm_{use_vllm}_samples_{num_samples}_len_{max_len}"
+    if speculative_model is not None:
+        path += f"_spec_{speculative_model}"
+    path = f"{path}.json"
+    return os.path.join(root_dir, path)
+
+
 ########################################################################
 # model
 

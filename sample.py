@@ -5,11 +5,13 @@
 
 
 import argparse
+import json
+
 import torch
 
 import benchmark_functions
 from progen.sampling import compute_prompt_cross_entropy_vllm, sample, sample_vllm, cross_entropy, truncate
-from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time
+from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time, get_benchmark_results_save_path
 
 
 def main():
@@ -46,7 +48,6 @@ def main():
     parser.add_argument('--ngram_prompt_lookup_max', type=int, default=4)
     parser.add_argument('--rope_dtype', type=str, default='float32')
     args = parser.parse_args()
-
 
     # (2) preamble
 
@@ -155,7 +156,34 @@ def main():
     # (6) benchmark
 
     if args.benchmark:
-        raise NotImplementedError
+        if args.use_vllm:
+            assert tokenizer is not None, 'Use --separate_tokenizer with --benchmark for vllm models'
+            results = benchmark_functions.benchmark_vllm_model(
+                model,
+                tokenizer,
+                args.context,
+                device,
+                args.max_length,
+                args.num_samples,
+                args.p,
+                args.t,
+            )
+        else:
+            raise NotImplementedError('benchmarking not implemented for non-VLLM models')
+
+        # Add args to results
+        results.update(vars(args))
+
+        save_path = get_benchmark_results_save_path(
+            root_dir='benchmark',
+            model_name=args.model,
+            use_vllm=args.use_vllm,
+            num_samples=args.num_samples,
+            max_len=args.max_length,
+            speculative_model=args.speculative_model,
+        )
+        with open(save_path, 'w') as f:
+            json.dump(results, f)
 
 
 if __name__ == '__main__':
