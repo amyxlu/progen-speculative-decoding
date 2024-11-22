@@ -30,9 +30,6 @@ def sample_vllm(device, model: LLM, tokenizer, context, max_length, num_return_s
         top_p=top_p,
         max_tokens=max_length,
     )
-    # hf_overrides = dict(
-    #     pad_token_id=pad_token_id,
-    # )
     if tokenizer is None:
         outputs = model.generate(context, sampling_params)
         assert len(outputs) == 1
@@ -66,7 +63,7 @@ def cross_entropy(logits, target, reduction='mean'):
     return torch.nn.functional.cross_entropy(input=logits, target=target, weight=None, size_average=None, reduce=None, reduction=reduction)
 
 
-def compute_prompt_cross_entropy_vllm(llm: LLM, prompt: str) -> float:
+def compute_prompt_cross_entropy_vllm(llm: LLM, prompt: str, device, tokenizer=None) -> float:
     """Computes the cross-entropy of a prompt with the model.
 
     The prompt should already be prepended with either a 1 or 2 token.
@@ -74,7 +71,14 @@ def compute_prompt_cross_entropy_vllm(llm: LLM, prompt: str) -> float:
     # Set prompt_logprobs=0 to only compute the logprobs of the prompt tokens.
     # Set max_tokens=1 to only generate one token for speed.
     sampling_params = SamplingParams(max_tokens=1, prompt_logprobs=0)
-    output = llm.generate(prompt, sampling_params)
+
+    if tokenizer is not None:
+        input_ids = torch.tensor(tokenizer.encode(prompt).ids).to(device)
+        tokens_prompt = TokensPrompt(prompt_token_ids=input_ids)
+    else:
+        tokens_prompt = prompt
+
+    output = llm.generate(tokens_prompt, sampling_params)
     # There should only be one output sequence.
     assert len(output) == 1
     # The prompt logprobs should be the same length as the prompt.

@@ -7,6 +7,7 @@
 import argparse
 import torch
 
+import benchmark_functions
 from progen.sampling import compute_prompt_cross_entropy_vllm, sample, sample_vllm, cross_entropy, truncate
 from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time
 
@@ -36,6 +37,8 @@ def main():
     parser.add_argument('--fp16', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--context', type=str, default='1')
     parser.add_argument('--sanity', default=True, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--sample', default=True, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--benchmark', default=False, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--use_vllm', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--separate_tokenizer', default=False, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--speculative_model', type=str, choices=speculative_models, default=None)
@@ -122,7 +125,7 @@ def main():
             prompt, ce_target = checkpoint_x_ce[args.model]
 
             if args.use_vllm:
-                ce_eval = compute_prompt_cross_entropy_vllm(model, prompt)
+                ce_eval = compute_prompt_cross_entropy_vllm(model, prompt, device=device, tokenizer=tokenizer)
             else:
                 ce_eval = ce(model, tokenizer, prompt, device)
 
@@ -132,21 +135,27 @@ def main():
 
     # (5) sample
 
-    with print_time('sampling'):
-        if args.use_vllm:
-            completions, outputs = sample_vllm(device=device, model=model, tokenizer=tokenizer, context=args.context, num_return_sequences=args.num_samples, temp=args.t, top_p=args.p, max_length=args.max_length)
-        else:
-            completions = sample(device=device, model=model, tokenizer=tokenizer, context=args.context, pad_token_id=tokenizer.encode('<|pad|>').ids[0], num_return_sequences=args.num_samples, temp=args.t, top_p=args.p, max_length=args.max_length)
+    if args.sample:
+        with print_time('sampling'):
+            if args.use_vllm:
+                completions, outputs = sample_vllm(device=device, model=model, tokenizer=tokenizer, context=args.context, num_return_sequences=args.num_samples, temp=args.t, top_p=args.p, max_length=args.max_length)
+            else:
+                completions = sample(device=device, model=model, tokenizer=tokenizer, context=args.context, pad_token_id=tokenizer.encode('<|pad|>').ids[0], num_return_sequences=args.num_samples, temp=args.t, top_p=args.p, max_length=args.max_length)
 
-        truncations = [truncate(completion, terminals=['1', '2']) for completion in completions]
+            truncations = [truncate(completion, terminals=['1', '2']) for completion in completions]
 
-        print(args.context)
+            print(args.context)
 
-        for (i, truncation) in enumerate(truncations):
+            for (i, truncation) in enumerate(truncations):
 
-            print()
-            print(i)
-            print(truncation)
+                print()
+                print(i)
+                print(truncation)
+
+    # (6) benchmark
+
+    if args.benchmark:
+        raise NotImplementedError
 
 
 if __name__ == '__main__':
