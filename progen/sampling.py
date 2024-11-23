@@ -22,13 +22,14 @@ def sample(device, model, tokenizer, context, max_length, num_return_sequences, 
         return tokenizer.decode_batch(as_lists(tokens_batch))
 
 
-def sample_vllm(device, model: LLM, tokenizer, context, max_length, num_return_sequences, top_p, temp):
+def sample_vllm(device, model: LLM, tokenizer, context, max_length, num_return_sequences, top_p, temp, frequency_penalty):
     """Sample from the VLLM model."""
     sampling_params = SamplingParams(
         n=num_return_sequences,
         temperature=temp,
         top_p=top_p,
         max_tokens=max_length,
+        frequency_penalty=frequency_penalty,
     )
     if tokenizer is None:
         outputs = model.generate(context, sampling_params)

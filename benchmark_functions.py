@@ -1,3 +1,5 @@
+import time
+
 import torch
 
 from vllm import SamplingParams
@@ -122,6 +124,7 @@ def benchmark_vllm_model(
     num_samples,
     top_p,
     temp,
+    frequency_penalty,
     n_warmup=3,
     n_repeat=10,
 ):
@@ -129,6 +132,7 @@ def benchmark_vllm_model(
         n=num_samples,
         temperature=temp,
         top_p=top_p,
+        frequency_penalty=frequency_penalty,
         max_tokens=max_length,
         detokenize=False,  # Do not detokenize for benchmarking
     )
@@ -166,6 +170,40 @@ def benchmark_vllm_model(
         "times": times,
         "do_bench_kwargs": kwargs,
     }
+
+
+def collect_speculative_decoding_metrics(
+    model,
+    tokenizer,
+    context,
+    device,
+    max_length,
+    num_samples,
+    top_p,
+    temp,
+    frequency_penalty,
+    n_repeat=10,
+):
+    sampling_params = SamplingParams(
+        n=num_samples,
+        temperature=temp,
+        top_p=top_p,
+        frequency_penalty=frequency_penalty,
+        max_tokens=max_length,
+        detokenize=False,  # Do not detokenize for benchmarking
+    )
+    if tokenizer is None:
+        prompts = context
+    else:
+        input_ids = torch.tensor(tokenizer.encode(context).ids).view([1, -1]).to(device)
+        prompts = TokensPrompt(prompt_token_ids=input_ids)
+
+    for _ in range(n_repeat):
+        model.generate(prompts, sampling_params)
+
+    # Sleep for 5 seconds to allow the metrics to be logged. 5 seconds is vllm's default
+    # logging interval.
+    time.sleep(5)
 
 
 def main():
