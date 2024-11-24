@@ -13,4 +13,5 @@ __pycache__
 *.hydra
 *.log
 slurm/
-benchmark/
+benchmark*/
+spec_decode_metrics/

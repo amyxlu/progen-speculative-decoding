@@ -16,6 +16,10 @@ from progen.utils import create_model, create_tokenizer_custom, set_env, set_see
 import logger as logger_utils
 
 
+TIME_BENCHMARK_DIR = "benchmark"
+SPEC_DECODE_METRICS_DIR = "spec_decode_metrics"
+
+
 def none_or_val(value, dtype=str):
     return None if value == 'None' else dtype(value)
 
@@ -187,18 +191,17 @@ def main():
                 print(i)
                 print(truncation)
 
-    save_dir = get_benchmark_results_save_dir(
-        root_dir='benchmark',
-        model_name=args.model,
-        use_vllm=args.use_vllm,
-        num_samples=args.num_samples,
-        max_len=args.max_length,
-        speculative_model=args.speculative_model,
-    )
-    save_dir = pathlib.Path(save_dir)
-
     # (6) Spec decoding metrics
     if args.log_spec_decode_metrics:
+        save_dir = get_benchmark_results_save_dir(
+            root_dir=SPEC_DECODE_METRICS_DIR,
+            model_name=args.model,
+            use_vllm=args.use_vllm,
+            num_samples=args.num_samples,
+            max_len=args.max_length,
+            speculative_model=args.speculative_model,
+        )
+        save_dir = pathlib.Path(save_dir)
         if not save_dir.exists():
             save_dir.mkdir(parents=True)
         path = save_dir / "spec_decode_metrics.json"
@@ -242,6 +245,16 @@ def main():
 
         # Add args to results
         results.update(vars(args))
+
+        save_dir = get_benchmark_results_save_dir(
+            root_dir=TIME_BENCHMARK_DIR,
+            model_name=args.model,
+            use_vllm=args.use_vllm,
+            num_samples=args.num_samples,
+            max_len=args.max_length,
+            speculative_model=args.speculative_model,
+        )
+        save_dir = pathlib.Path(save_dir)
 
         if not save_dir.exists():
             save_dir.mkdir(parents=True)
