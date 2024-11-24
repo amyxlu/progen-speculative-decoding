@@ -20,9 +20,27 @@ tar -xvf checkpoints/${model}/${model}.tar.gz -C checkpoints/${model}/
 Repeat for `model=progen2-xlarge`.
 
 ## Basic Generation
+
+With vllm (skip sanity check):
+
 ```
-python sample.py --model progen2-xlarge --num-samples 1 --max-length 512
+python sample.py --model progen2-xlarge --num-samples 1 --max-length 512 --use_vllm=True --sanity=False
 ```
+
+Without vllm:
+
+```
+python sample.py --model progen2-xlarge --num-samples 1 --max-length 512 --use_vllm=False
+```
+
+## Run modes
+
+`sample.py` provides four main run modes:
+
+- `--sanity`: sanity check that the model cross-entropy is correct on a test sequence. NOTE: this does not currently work with vllm.
+- `--sample`: whether to sample from the model.
+- `--benchmark`: whether to run the timing benchmark.
+- `--log_spec_decode_metrics`: whether to log speculative decoding metrics. This is mutually exclusive with `--sample=True` and `--benchmark=True`, and requires `--use_vllm=True`.
 
 ## Sampling with Speculative Decoding
 ```

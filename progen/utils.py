@@ -2,6 +2,7 @@ import random
 import time
 import os
 import abc
+import datetime
 from typing import Tuple, Union
 
 import torch
@@ -41,13 +42,17 @@ def set_seed(seed, deterministic=True):
         torch.backends.cudnn.benchmark = not deterministic
 
 
-def get_benchmark_results_save_path(
-    root_dir, model_name, use_vllm, num_samples, max_len, speculative_model
+def get_benchmark_results_save_dir(
+    root_dir, model_name, use_vllm, num_samples, max_len, speculative_model,
+    add_timestamp=True
 ):
-    path = f"{model_name}_vllm_{use_vllm}_samples_{num_samples}_len_{max_len}"
+    path = f"{model_name}/vllm_{use_vllm}_samples_{num_samples}_len_{max_len}"
     if speculative_model is not None:
         path += f"_spec_{speculative_model}"
-    path = f"{path}.json"
+
+    if add_timestamp:
+        path += f"-{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+
     return os.path.join(root_dir, path)
 
 
@@ -62,8 +67,10 @@ def create_model(
     tokenizer=None,
     speculative_model=None,
     num_speculative_tokens=None,
+    ngram_prompt_lookup_min=1,
     ngram_prompt_lookup_max=4,
     rope_dtype="float32",
+    disable_log_stats=False,
 ):
     if use_vllm:
         assert (speculative_model is None) == (num_speculative_tokens is None), (
@@ -87,7 +94,9 @@ def create_model(
             hf_overrides=hf_overrides,
             speculative_model=speculative_model,
             num_speculative_tokens=num_speculative_tokens,
+            ngram_prompt_lookup_min=ngram_prompt_lookup_min,
             ngram_prompt_lookup_max=ngram_prompt_lookup_max,
+            disable_log_stats=disable_log_stats,
         )
 
     assert rope_dtype == "float32", "rope_dtype must be float32 when not using VLLM"

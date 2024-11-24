@@ -1,3 +1,5 @@
+import time
+
 import torch
 
 from vllm import SamplingParams
@@ -95,16 +97,15 @@ def custom_do_bench(
         end_event[i].record()
     # Record clocks
     di.synchronize()
-    times = torch.tensor(
-        [s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float
-    )
+    times_list = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
+    times = torch.tensor(times_list, dtype=torch.float)
     if quantiles is not None:
         quantile_values = torch.quantile(times, torch.tensor(quantiles, dtype=torch.float)).tolist()
         if len(quantile_values) == 1:
             quantile_values = quantile_values[0]
     else:
         quantile_values = None
-    return torch.mean(times).item(), torch.std(times).item(), quantile_values
+    return torch.mean(times).item(), torch.std(times).item(), quantile_values, times_list
 
 
 def flop_counter(model, input_data):
@@ -115,25 +116,40 @@ def flop_counter(model, input_data):
 
 
 def benchmark_vllm_model(
-    model, tokenizer, context, device, max_length, num_samples, top_p, temp
+    model,
+    tokenizer,
+    context,
+    device,
+    max_length,
+    num_samples,
+    top_p,
+    temp,
+    frequency_penalty,
+    n_warmup=3,
+    n_repeat=10,
 ):
     sampling_params = SamplingParams(
         n=num_samples,
         temperature=temp,
         top_p=top_p,
+        frequency_penalty=frequency_penalty,
         max_tokens=max_length,
+        detokenize=False,  # Do not detokenize for benchmarking
     )
-    input_ids = torch.tensor(tokenizer.encode(context).ids).view([1, -1]).to(device)
-    prompts = TokensPrompt(prompt_token_ids=input_ids)
+    if tokenizer is None:
+        prompts = context
+    else:
+        input_ids = torch.tensor(tokenizer.encode(context).ids).view([1, -1]).to(device)
+        prompts = TokensPrompt(prompt_token_ids=input_ids)
 
     def generate():
         model.generate(prompts, sampling_params)
 
     # Input kwargs
     kwargs = dict(
-        n_warmup=3,
+        n_warmup=n_warmup,
         warmup_time=None,
-        n_repeat=10,
+        n_repeat=n_repeat,
         rep_time=None,
         grad_to_none=None,
         quantiles=[0.1, 0.25, 0.5, 0.75, 0.9],
@@ -142,15 +158,52 @@ def benchmark_vllm_model(
         device_type="cuda",
     )
 
-    avg_time, std_dev, quantiles = custom_do_bench(generate, **kwargs)
-    print(f"Average time: {avg_time} ms, Standard deviation: {std_dev} ms, Quantiles: {quantiles}")
+    avg_time, std_dev, quantiles, times = custom_do_bench(generate, **kwargs)
+    print(f"Average time: {avg_time} ms, Standard deviation: {std_dev} ms")
+    print(f"Quantiles: {quantiles}")
+    print(f"Times: {times}")
 
     return {
         "avg_time": avg_time,
         "std": std_dev,
         "quantiles": quantiles,
+        "times": times,
         "do_bench_kwargs": kwargs,
     }
+
+
+def collect_speculative_decoding_metrics(
+    model,
+    tokenizer,
+    context,
+    device,
+    max_length,
+    num_samples,
+    top_p,
+    temp,
+    frequency_penalty,
+    n_repeat=10,
+):
+    sampling_params = SamplingParams(
+        n=num_samples,
+        temperature=temp,
+        top_p=top_p,
+        frequency_penalty=frequency_penalty,
+        max_tokens=max_length,
+        detokenize=False,  # Do not detokenize for benchmarking
+    )
+    if tokenizer is None:
+        prompts = context
+    else:
+        input_ids = torch.tensor(tokenizer.encode(context).ids).view([1, -1]).to(device)
+        prompts = TokensPrompt(prompt_token_ids=input_ids)
+
+    for _ in range(n_repeat):
+        model.generate(prompts, sampling_params)
+
+    # Sleep for 5 seconds to allow the metrics to be logged. 5 seconds is vllm's default
+    # logging interval.
+    time.sleep(5)
 
 
 def main():

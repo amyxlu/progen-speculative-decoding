@@ -7,3 +7,4 @@ accelerate
 einops
 termcolor # for fun viz during printing
 ipykernel
+python-json-logger
