@@ -224,6 +224,10 @@ def main():
             frequency_penalty=args.frequency_penalty,
         )
 
+        # Save config to the same directory.
+        with open(save_dir / "config.json", "w") as f:
+            json.dump(vars(args), f)
+
     # (7) timing benchmark
 
     if args.benchmark:
