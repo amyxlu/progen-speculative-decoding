@@ -11,7 +11,7 @@ import torch
 from dotenv import load_dotenv
 
 from progen.sampling import sample, cross_entropy, truncate
-from progen.speculative import speculative_generate
+from progen.speculative import speculative_generate, speculative_generate_batched
 from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time, GreedyProcessor, LogitsProcessor
 import progen.printing_utils as printing
 from termcolor import colored
@@ -47,6 +47,7 @@ def main():
     parser.add_argument('--context', type=str, nargs="+", default='1', help="Defaults to Progen's BOS token.")
     parser.add_argument('--sanity', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--flash-attention', default=False, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--ragged-batches', default=False, type=lambda x: (str(x).lower() == 'true'))
     args = parser.parse_args()
 
     # progen special tokens:
@@ -74,8 +75,8 @@ def main():
     # (3) load
 
     with print_time('loading parameters'):
-        draft_model = create_model(ckpt=draft_ckpt, fp16=args.fp16, flash_attention=args.flash_attention).to(device)
-        target_model = create_model(ckpt=target_ckpt, fp16=args.fp16, flash_attention=args.flash_attention).to(device)
+        draft_model = create_model(ckpt=draft_ckpt, fp16=args.fp16, flash_attention=args.flash_attention, ragged_batches=args.ragged_batches).to(device)
+        target_model = create_model(ckpt=target_ckpt, fp16=args.fp16, flash_attention=args.flash_attention, ragged_batches=args.ragged_batches).to(device)
 
     with print_time('loading tokenizer'):
         tokenizer = create_tokenizer_custom(file='tokenizer.json')
@@ -83,17 +84,20 @@ def main():
     inputs = args.context
     if not isinstance(inputs, list):
         inputs = [inputs]
-    inputs = torch.tensor([int(i) for i in inputs], dtype=torch.long, device=device)
 
     # (4) speculative sampling
     eos_tok = tokenizer.token_to_id("<|eos|>")
     bos_tok = tokenizer.token_to_id("<|bos|>")
     pad_tok = tokenizer.token_to_id("<|pad|>")
 
-    for _ in range(args.num_reruns):
+    if args.ragged_batches:
         spec_start_time = time.time()
-        ids, accept_rate = speculative_generate(
-            inputs = inputs,
+        input_tokens = tokenizer.encode_batch(inputs)
+        ids_list, accept_rate = speculative_generate_batched(
+            inputs = sum([
+                [x.ids.copy() for x in input_tokens] 
+                for _ in range(args.num_reruns)
+            ], []),
             drafter = draft_model,
             target = target_model,
             tokenizer = tokenizer,
@@ -102,23 +106,55 @@ def main():
             max_gen_len = args.max_length,
             eos_tokens_id = eos_tok,
             pad_token_id = pad_tok,
-            use_cache = False,
+            use_cache = True,
             skip_sample_adjustment = False,
             first_target = True, 
             debug = False,
         )
-        
+
         spec_end_time = time.time()
-        spec_output = tokenizer.decode(ids, skip_special_tokens=True)
+        for ids in ids_list:
+            spec_output = tokenizer.decode(ids, skip_special_tokens=True)
 
-        print(colored("========== Speculative ==========", "green"))
-        print(colored("Out:", "green"), spec_output)
-        print(colored(f"Acceptance rate: {accept_rate:.3f}", "green"))
+            print(colored("========== Speculative ==========", "green"))
+            print(colored("Out:", "green"), spec_output)
+            print(colored(f"Acceptance rate: {accept_rate:.3f}", "green"))
 
-        spec_throughput = len(spec_output) / (spec_end_time - spec_start_time)
-        print(colored(f"Time: {spec_end_time - spec_start_time:.1f}s", "green"))
-        print(colored(f"Throughput: {spec_throughput:.1f} tokens/s", "green"))
-        print(colored("========== Speculative ==========", "green")) 
+            # spec_throughput = len(spec_output) / (spec_end_time - spec_start_time)
+            # print(colored(f"Time: {spec_end_time - spec_start_time:.1f}s", "green"))
+            # print(colored(f"Throughput: {spec_throughput:.1f} tokens/s", "green"))
+            print(colored("========== Speculative ==========", "green"))
+    else:
+        inputs = torch.tensor([int(i) for i in inputs], dtype=torch.long, device=device)
+        for _ in range(args.num_reruns):
+            spec_start_time = time.time()
+            ids, accept_rate = speculative_generate(
+                inputs = inputs,
+                drafter = draft_model,
+                target = target_model,
+                tokenizer = tokenizer,
+                gamma = 5,
+                logits_processor = GreedyProcessor(),
+                max_gen_len = args.max_length,
+                eos_tokens_id = eos_tok,
+                pad_token_id = pad_tok,
+                use_cache = False,
+                skip_sample_adjustment = False,
+                first_target = True, 
+                debug = False,
+            )
+            
+            spec_end_time = time.time()
+            spec_output = tokenizer.decode(ids, skip_special_tokens=True)
+
+            print(colored("========== Speculative ==========", "green"))
+            print(colored("Out:", "green"), spec_output)
+            print(colored(f"Acceptance rate: {accept_rate:.3f}", "green"))
+
+            spec_throughput = len(spec_output) / (spec_end_time - spec_start_time)
+            print(colored(f"Time: {spec_end_time - spec_start_time:.1f}s", "green"))
+            print(colored(f"Throughput: {spec_throughput:.1f} tokens/s", "green"))
+            print(colored("========== Speculative ==========", "green")) 
         
 
 if __name__ == '__main__':

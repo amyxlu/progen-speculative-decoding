@@ -42,6 +42,7 @@ def main():
     parser.add_argument('--context', type=str, default='1')
     parser.add_argument('--sanity', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--flash-attention', default=False, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--ragged-batches', default=False, type=lambda x: (str(x).lower() == 'true'))
     args = parser.parse_args()
 
 
@@ -64,8 +65,9 @@ def main():
     # (3) load
 
     with print_time('loading parameters'):
-        model = create_model(ckpt=ckpt, fp16=args.fp16, flash_attention=args.flash_attention).to(device)
+        model = create_model(ckpt=ckpt, fp16=args.fp16, flash_attention=args.flash_attention, ragged_batches=args.ragged_batches).to(device)
 
+    # print(model.config)
 
     with print_time('loading tokenizer'):
         tokenizer = create_tokenizer_custom(file='tokenizer.json')
@@ -108,6 +110,7 @@ def main():
             print(ce_target, ce_eval, abs(ce_eval - ce_target))
 
             # assert abs(ce_eval - ce_target) < 0.1
+
 
     # (5) sample
 

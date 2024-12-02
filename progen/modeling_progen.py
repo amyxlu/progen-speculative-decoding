@@ -209,7 +209,7 @@ class ProGenAttention(nn.Module):
             past_value = layer_past[1]
 
             position_ids = torch.cat([
-                torch.arange(batch_keys.shape[0], batch_keys.shape[0] + l, device=hidden_states.device) for ((l,), batch_keys) in zip(hidden_shape, past_key)
+                torch.arange(batch_keys.shape[0], batch_keys.shape[0] + l, device=hidden_states.device) for ((l,), batch_keys) in zip(hidden_shape, past_key, strict=True)
             ])
         seq_len = position_ids.max()+1
 
@@ -260,6 +260,7 @@ class ProGenAttention(nn.Module):
             cu_seqlens_k=F.pad(torch.cumsum(torch.tensor([k.shape[0] for k in present[0]], dtype=torch.int32), 0), (1, 0)).to(torch.int32).to(query.device), # needs a zero in front
             max_seqlen_q=max([l for l, in hidden_shape]),
             max_seqlen_k=max([k.shape[0] for k in present[0]]),
+            causal=True
         ).to(hidden_states.dtype) # [squashed_seq_len, num_heads, head_dim]
 
         attn_output = self._merge_heads(attn_output, self.num_attention_heads, self.head_dim)
@@ -447,6 +448,10 @@ class ProGenBlock(nn.Module):
         outputs = attn_outputs[1:]
 
         feed_forward_hidden_states = self.mlp(hidden_states)
+        
+        # self.attention_output = attn_output.detach()
+        # self.ff_output = feed_forward_hidden_states.detach()
+
         hidden_states = attn_output + feed_forward_hidden_states + residual
 
         if use_cache:
@@ -582,18 +587,17 @@ class ProGenModel(ProGenPreTrainedModel):
         if token_type_ids is not None:
             token_type_ids = token_type_ids.view(-1, input_shape[-1])
 
-        if position_ids is not None:
-            position_ids = position_ids.view(-1, input_shape[-1])
+        # if position_ids is not None:
+        #     position_ids = position_ids.view(-1, input_shape[-1])
 
         if past_key_values is None:
-            past_length = 0
             past_key_values = tuple([None] * len(self.h))
-        else:
-            past_length = past_key_values[0][0].size(-2)
 
-        if position_ids is None:
-            position_ids = torch.arange(past_length, input_shape[-1] + past_length, dtype=torch.long, device=device)
-            position_ids = position_ids.unsqueeze(0).view(-1, input_shape[-1])
+        # print('past_length', past_length)
+        # assert position_ids is None, "Position ids are not supported in this model."
+        # if position_ids is None:
+        #     position_ids = torch.arange(past_length, input_shape[-1] + past_length, dtype=torch.long, device=device)
+        #     position_ids = position_ids.unsqueeze(0).view(-1, input_shape[-1])
 
 
         # Prepare head mask if needed
@@ -621,11 +625,20 @@ class ProGenModel(ProGenPreTrainedModel):
 
         if self.ragged_batches:
             if attention_mask is not None:
-                assert attention_mask.shape == input_shape
-                hidden_states, hidden_shape = einops.pack([
-                    hidden_states[b][attention_mask[b].bool()]
-                    for b in range(batch_size)
-                ], '* dim')
+                if attention_mask.shape == input_shape:
+                    hidden_states, hidden_shape = einops.pack([
+                        hidden_states[b][attention_mask[b].bool()]
+                        for b in range(batch_size)
+                    ], '* dim')
+                else:
+                    if not torch.allclose(attention_mask[:, -input_shape[1] : ], torch.tensor(1)):
+                        raise ValueError("Ragged batches, when using KV cache, assumes last few tokens are not masked")
+                    # treat as though we didn't pass in an attention mask
+                    hidden_states, hidden_shape = einops.pack(
+                        [hidden_states[b] for b in range(batch_size)],
+                        '* dim'
+                    )
+                    original_attention_mask = None
             else:
                 hidden_states, hidden_shape = einops.pack(
                     [hidden_states[b] for b in range(batch_size)],
@@ -776,10 +789,10 @@ class ProGenForCausalLM(ProGenPreTrainedModel):
     def set_output_embeddings(self, new_embeddings):
         return
 
-    def prepare_inputs_for_generation(self, input_ids, past=None, **kwargs):
+    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, **kwargs):
         token_type_ids = kwargs.get("token_type_ids", None)
         # only last token for inputs_ids if past is defined in kwargs
-        if past:
+        if past_key_values:
             input_ids = input_ids[:, -1].unsqueeze(-1)
             if token_type_ids is not None:
                 token_type_ids = token_type_ids[:, -1].unsqueeze(-1)
@@ -791,13 +804,13 @@ class ProGenForCausalLM(ProGenPreTrainedModel):
             # create position_ids on the fly for batch generation
             position_ids = attention_mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(attention_mask == 0, 1)
-            if past:
+            if past_key_values:
                 position_ids = position_ids[:, -1].unsqueeze(-1)
         else:
             position_ids = None
         return {
             "input_ids": input_ids,
-            "past_key_values": past,
+            "past_key_values": past_key_values,
             "use_cache": kwargs.get("use_cache"),
             "position_ids": position_ids,
             "attention_mask": attention_mask,

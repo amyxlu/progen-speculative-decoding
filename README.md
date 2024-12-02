@@ -23,14 +23,25 @@ Repeat for `model=progen2-xlarge`.
 ```
 python sample.py --model progen2-xlarge --num-samples 1 --max-length 512
 ```
+with ragged batches:
+```
+python sample.py --fp16 False --ragged-batches true --model progen2-xlarge
+```
 
 ## Sampling with Speculative Decoding
 ```
 python run_speculative_sampling.py \
   --draft_model progen2-small \
   --target_model progen2-xlarge \
-  --num-reruns 8 \  # batch size is always 1; this just loops the speculative
-  decoding function
+  --num-reruns 8 \
+  --max-length 512
+```
+```
+python run_speculative_sampling.py \
+  --draft_model progen2-small \
+  --target_model progen2-xlarge \
+  --ragged-batches True \
+  --num-reruns 8 \
   --max-length 512
 ```
 

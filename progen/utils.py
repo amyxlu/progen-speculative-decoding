@@ -43,16 +43,16 @@ def set_seed(seed, deterministic=True):
 # model
 
 
-def create_model(ckpt, fp16=True, flash_attention=False):
+def create_model(ckpt, fp16=True, flash_attention=False, ragged_batches=False):
     if fp16:
         model = ProGenForCausalLM.from_pretrained(
             ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True,
-            flash_attention=flash_attention, ragged_batches=True
+            flash_attention=flash_attention, ragged_batches=ragged_batches
         )
     else:
         model = ProGenForCausalLM.from_pretrained(
             ckpt,
-            flash_attention=flash_attention, ragged_batches=True)
+            flash_attention=flash_attention, ragged_batches=ragged_batches)
     model.eval()
     return model
 
