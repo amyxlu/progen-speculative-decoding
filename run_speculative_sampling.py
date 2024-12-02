@@ -113,17 +113,20 @@ def main():
         )
 
         spec_end_time = time.time()
+        len_sum = 0
         for ids in ids_list:
             spec_output = tokenizer.decode(ids, skip_special_tokens=True)
-
+            len_sum += len(spec_output)
             print(colored("========== Speculative ==========", "green"))
             print(colored("Out:", "green"), spec_output)
             print(colored(f"Acceptance rate: {accept_rate:.3f}", "green"))
 
-            # spec_throughput = len(spec_output) / (spec_end_time - spec_start_time)
             # print(colored(f"Time: {spec_end_time - spec_start_time:.1f}s", "green"))
             # print(colored(f"Throughput: {spec_throughput:.1f} tokens/s", "green"))
             print(colored("========== Speculative ==========", "green"))
+        spec_throughput = len_sum / (spec_end_time - spec_start_time)
+        print(colored(f"Time: {spec_end_time - spec_start_time:.1f}s", "green"))
+        print(colored(f"Throughput: {spec_throughput:.1f} tokens/s", "green"))
     else:
         inputs = torch.tensor([int(i) for i in inputs], dtype=torch.long, device=device)
         for _ in range(args.num_reruns):
