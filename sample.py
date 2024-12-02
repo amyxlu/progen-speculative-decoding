@@ -60,6 +60,7 @@ def main():
     parser.add_argument('--ngram_prompt_lookup_min', type=int, default=1)
     parser.add_argument('--ngram_prompt_lookup_max', type=int, default=4)
     parser.add_argument('--rope_dtype', type=str, default='float32')
+    parser.add_argument('--bsn', type=str, default=None)
     args = parser.parse_args()
 
     assert not (
@@ -257,6 +258,7 @@ def main():
             num_samples=args.num_samples,
             max_len=args.max_length,
             speculative_model=args.speculative_model,
+            bsn=args.bsn,
         )
         save_dir = pathlib.Path(save_dir)
 
