@@ -1,0 +1,4 @@
+python sample.py --model progen2-xlarge --num-samples 1 --max-length 512 --use_vllm=True --sanity=False --benchmark true --bsn flash_fp16_r32 --fp16 true --rope_dtype float32
+python sample.py --model progen2-xlarge --num-samples 1 --max-length 512 --use_vllm=True --sanity=False --benchmark true --bsn flash_fp16_r16 --fp16 true --rope_dtype float16
+python sample.py --model progen2-xlarge --num-samples 1 --max-length 512 --use_vllm=True --sanity=False --benchmark true --bsn flash_fp32_r32 --fp16 False --rope_dtype float32
+python sample.py --model progen2-xlarge --num-samples 1 --max-length 512 --use_vllm=True --sanity=False --benchmark true --bsn flash_fp32_r16 --fp16 False --rope_dtype float16
