@@ -2,8 +2,6 @@ import time
 
 import torch
 
-from vllm import SamplingParams
-from vllm.inputs.data import TokensPrompt
 
 
 # Adapted from:
@@ -128,6 +126,8 @@ def benchmark_vllm_model(
     n_warmup=3,
     n_repeat=10,
 ):
+    from vllm import SamplingParams
+    from vllm.inputs.data import TokensPrompt
     sampling_params = SamplingParams(
         n=num_samples,
         temperature=temp,
@@ -172,6 +172,72 @@ def benchmark_vllm_model(
     }
 
 
+def benchmark_batch_spec_model(
+    draft_model,
+    target_model,
+    tokenizer,
+    context,
+    device,
+    max_length,
+    num_samples,
+    top_p,
+    temp,
+    frequency_penalty,
+    batch_size,
+    num_speculative_tokens,
+    n_warmup=3,
+    n_repeat=10,
+):
+    from progen.speculative import speculative_generate_batched
+    from progen.utils import NucleusProcessor
+    assert frequency_penalty == 0, "Frequency penalty is not supported for batched speculative decoding."
+    pad_token_id=tokenizer.encode('<|pad|>').ids[0] 
+    def generate():
+        for i in range(0, num_samples, batch_size):
+            input_ids = [tokenizer.encode(context).ids.copy() for _ in range(min(batch_size, num_samples - i))]
+            ids_list, accept_rate = speculative_generate_batched(
+                inputs = input_ids,
+                drafter = draft_model,
+                target = target_model,
+                tokenizer = tokenizer,
+                gamma = num_speculative_tokens,
+                logits_processor = NucleusProcessor(temp, top_p),
+                max_gen_len = max_length,
+                eos_tokens_id = [],
+                pad_token_id = pad_token_id,
+                use_cache = True,
+                skip_sample_adjustment = False,
+                first_target = True, 
+                debug = False,
+            )
+
+    # Input kwargs
+    kwargs = dict(
+        n_warmup=n_warmup,
+        warmup_time=None,
+        n_repeat=n_repeat,
+        rep_time=None,
+        grad_to_none=None,
+        quantiles=[0.1, 0.25, 0.5, 0.75, 0.9],
+        fast_flush=True,
+        return_mode="mean",
+        device_type="cuda",
+    )
+
+    avg_time, std_dev, quantiles, times = custom_do_bench(generate, **kwargs)
+    print(f"Average time: {avg_time} ms, Standard deviation: {std_dev} ms")
+    print(f"Quantiles: {quantiles}")
+    print(f"Times: {times}")
+
+    return {
+        "avg_time": avg_time,
+        "std": std_dev,
+        "quantiles": quantiles,
+        "times": times,
+        "do_bench_kwargs": kwargs,
+    }
+
+
 def collect_speculative_decoding_metrics(
     model,
     tokenizer,
@@ -184,6 +250,8 @@ def collect_speculative_decoding_metrics(
     frequency_penalty,
     n_repeat=10,
 ):
+    from vllm import SamplingParams
+    from vllm.inputs.data import TokensPrompt
     sampling_params = SamplingParams(
         n=num_samples,
         temperature=temp,

@@ -16,7 +16,7 @@ import torch
 import benchmark_functions
 from progen.sampling import compute_prompt_cross_entropy_vllm, sample, sample_vllm, cross_entropy, truncate
 from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time, get_benchmark_results_save_dir
-import logger as logger_utils
+
 
 
 TIME_BENCHMARK_DIR = "benchmark"
@@ -69,6 +69,7 @@ def main():
     parser.add_argument('--ngram_prompt_lookup_max', type=int, default=4)
     parser.add_argument('--rope_dtype', type=str, default='float32')
     parser.add_argument('--bsn', type=str, default=None)
+    parser.add_argument('--batch_size', type=int, default=1)
     args = parser.parse_args()
 
     assert not (
@@ -82,6 +83,8 @@ def main():
             args.speculative_model is not None
         ), "log_spec_decode_metrics can only be used with a speculative model"
 
+    if args.ragged_batches and args.use_vllm:
+        raise ValueError("Ragged batches are not supported for VLLM models.")
     # (2) preamble
 
     set_env()
@@ -132,7 +135,13 @@ def main():
         )
         if not args.use_vllm:
             model = model.to(device)
-
+            if spec_model is not None:
+                spec_model = create_model(
+                    ckpt=spec_model, 
+                    fp16=args.fp16, 
+                    flash_attention=args.flash_attention, 
+                    ragged_batches=args.ragged_batches
+                ).to(device)
     # (4) sanity
 
     if args.sanity:
@@ -208,6 +217,9 @@ def main():
 
     # (6) Spec decoding metrics
     if args.log_spec_decode_metrics:
+        if not args.use_vllm:
+            raise NotImplementedError("Speculative decoding metrics are only supported for VLLM models")
+        import logger as logger_utils
         save_dir = get_benchmark_results_save_dir(
             root_dir=SPEC_DECODE_METRICS_DIR,
             model_name=args.model,
@@ -260,7 +272,23 @@ def main():
                 frequency_penalty=args.frequency_penalty,
             )
         else:
-            raise NotImplementedError('benchmarking not implemented for non-VLLM models')
+            if args.speculative_model is not None:
+                results = benchmark_functions.benchmark_batch_spec_model(
+                    target_model=model,
+                    draft_model=spec_model,
+                    tokenizer=tokenizer,
+                    context=args.context,
+                    device=device,
+                    batch_size=args.batch_size,
+                    num_speculative_tokens=args.num_speculative_tokens,
+                    max_length=args.max_length,
+                    num_samples=args.num_samples,
+                    top_p=args.p,
+                    temp=args.t,
+                    frequency_penalty=args.frequency_penalty,
+                )
+            else:
+                raise NotImplementedError("Non vllm non speculative model benchmarking is not supported")
 
         # Add args to results
         results.update(vars(args))
@@ -273,9 +301,10 @@ def main():
             max_len=args.max_length,
             speculative_model=args.speculative_model,
             bsn=args.bsn,
+            batch_size=args.batch_size,
         )
         save_dir = pathlib.Path(save_dir)
-
+        print(f'Saving benchmark results to {save_dir}')
         if not save_dir.exists():
             save_dir.mkdir(parents=True)
         with open(save_dir / 'time_benchmark.json', 'w') as f:

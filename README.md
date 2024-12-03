@@ -47,6 +47,21 @@ python sample.py --fp16 False --ragged-batches true --model progen2-xlarge
 - `--benchmark`: whether to run the timing benchmark.
 - `--log_spec_decode_metrics`: whether to log speculative decoding metrics. This is mutually exclusive with `--sample=True` and `--benchmark=True`, and requires `--use_vllm=True`.
 
+Benchmarking with ragged batches:
+```sh
+python sample.py \
+  --fp16 False \
+  --ragged-batches true \
+  --use_vllm False \
+  --model progen2-xlarge \
+  --speculative_model progen2-small \
+  --num_speculative_tokens 5 \
+  --batch_size 1 \
+  --benchmark true \
+  --sanity false \
+  --sample false
+```
+
 ## Sampling with Speculative Decoding
 ```
 python run_speculative_sampling.py \
