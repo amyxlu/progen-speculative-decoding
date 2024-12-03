@@ -791,7 +791,7 @@ class ProGenForCausalLM(ProGenPreTrainedModel):
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None, **kwargs):
         token_type_ids = kwargs.get("token_type_ids", None)
-        # only last token for inputs_ids if past is defined in kwargs
+        # only last token for inputs_ids if past_key_values is defined in kwargs
         if past_key_values:
             input_ids = input_ids[:, -1].unsqueeze(-1)
             if token_type_ids is not None:

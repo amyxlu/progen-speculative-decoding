@@ -15,6 +15,7 @@
 
 # Modified configuration implementation based on https://github.com/huggingface/transformers/blob/main/src/transformers/models/gptj/configuration_gptj.py
 
+from transformers import AutoConfig
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
 
@@ -47,6 +48,7 @@ class ProGenConfig(PretrainedConfig):
         eos_token_id=50256,
         flash_attention=False,
         ragged_batches=False,
+        rope_dtype="float32",
         **kwargs
     ):
         super().__init__(bos_token_id=bos_token_id, eos_token_id=eos_token_id, **kwargs)
@@ -74,6 +76,8 @@ class ProGenConfig(PretrainedConfig):
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
 
+        self.rope_dtype = rope_dtype
+
     @property
     def max_position_embeddings(self):
         return self.n_positions
@@ -89,3 +93,6 @@ class ProGenConfig(PretrainedConfig):
     @property
     def num_hidden_layers(self):
         return self.n_layer
+
+
+AutoConfig.register("progen", ProGenConfig)

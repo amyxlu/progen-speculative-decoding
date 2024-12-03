@@ -2,6 +2,7 @@ import random
 import time
 import os
 import abc
+import datetime
 from typing import Tuple, Union
 
 import torch
@@ -9,8 +10,10 @@ from torch import Tensor
 from tokenizers import Tokenizer
 from transformers.cache_utils import DynamicCache
 from torch.nn import functional as F
+from vllm import LLM
 
 from .modeling_progen import ProGenForCausalLM
+from .modeling_progen_vllm import ProGenForCausalLM as ProGenForCausalLMVLLM
 
 
 class print_time:
@@ -39,11 +42,68 @@ def set_seed(seed, deterministic=True):
         torch.backends.cudnn.benchmark = not deterministic
 
 
+def get_benchmark_results_save_dir(
+    root_dir, model_name, use_vllm, num_samples, max_len, speculative_model,
+    add_timestamp=True, bsn=None,
+):
+    path = f"{model_name}/vllm_{use_vllm}_samples_{num_samples}_len_{max_len}"
+    if speculative_model is not None:
+        path += f"_spec_{speculative_model}"
+
+    if bsn is not None:
+        path += f"_{bsn}"
+    elif add_timestamp:
+        path += f"-{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+
+    return os.path.join(root_dir, path)
+
+
 ########################################################################
 # model
 
 
-def create_model(ckpt, fp16=True, flash_attention=False, ragged_batches=False):
+def create_model(
+    ckpt,
+    fp16=True,
+    use_vllm=False,
+    tokenizer=None,
+    speculative_model=None,
+    num_speculative_tokens=None,
+    ngram_prompt_lookup_min=1,
+    ngram_prompt_lookup_max=4,
+    rope_dtype="float32",
+    disable_log_stats=False,
+    flash_attention=False, # non-vllm config
+    ragged_batches=False # non-vllm config
+):
+    if use_vllm:
+        assert (speculative_model is None) == (num_speculative_tokens is None), (
+            "speculative_model and num_speculative_tokens must be both None or both "
+            "not None"
+        )
+        if speculative_model is not None:
+            assert (
+                num_speculative_tokens > 0
+            ), "num_speculative_tokens must be greater than 0"
+
+        from vllm import ModelRegistry
+        ModelRegistry.register_model("ProGenForCausalLM", ProGenForCausalLMVLLM)
+        hf_overrides = {"rope_dtype": rope_dtype}
+        return LLM(
+            model=ckpt,
+            tokenizer=tokenizer,
+            dtype="float16" if fp16 else "auto",
+            skip_tokenizer_init=tokenizer is None,
+            trust_remote_code=False,
+            hf_overrides=hf_overrides,
+            speculative_model=speculative_model,
+            num_speculative_tokens=num_speculative_tokens,
+            ngram_prompt_lookup_min=ngram_prompt_lookup_min,
+            ngram_prompt_lookup_max=ngram_prompt_lookup_max,
+            disable_log_stats=disable_log_stats,
+        )
+
+    assert rope_dtype == "float32", "rope_dtype must be float32 when not using VLLM"
     if fp16:
         model = ProGenForCausalLM.from_pretrained(
             ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True,
@@ -137,12 +197,12 @@ class NucleusProcessor(MultinomialProcessor):
         sorted_logits[sorted_indices_to_remove] = -1e20
         logits = torch.gather(sorted_logits, -1, sorted_indices.argsort(-1))
         return logits
-    
+
 
 ####
 # https://github.com/romsto/Speculative-Decoding/blob/main/utils/logits_processor.py
 ###
-    
+
 class TopKNucleusProcessor(MultinomialProcessor):
     """Top-k and nucleus: Top-k sampling with top-p fallback."""
 
@@ -163,7 +223,7 @@ class TopKNucleusProcessor(MultinomialProcessor):
         sorted_logits[sorted_indices_to_remove] = -1e20
         logits = torch.gather(sorted_logits, -1, sorted_indices.argsort(-1))
         return logits
-    
+
 
 def prune_cache(cache: Union[Tuple[Tuple[Tensor, Tensor]], DynamicCache], num_tokens_to_discard: int):
     """
@@ -237,4 +297,3 @@ def prune_dynamic_cache(cache: DynamicCache, num_tokens_to_discard: int):
     cache._seen_tokens -= num_tokens_to_discard
 
     return cache
-
