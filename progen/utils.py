@@ -10,10 +10,8 @@ from torch import Tensor
 from tokenizers import Tokenizer
 from transformers.cache_utils import DynamicCache
 from torch.nn import functional as F
-from vllm import LLM
 
 from .modeling_progen import ProGenForCausalLM
-from .modeling_progen_vllm import ProGenForCausalLM as ProGenForCausalLMVLLM
 
 
 class print_time:
@@ -77,6 +75,8 @@ def create_model(
     ragged_batches=False # non-vllm config
 ):
     if use_vllm:
+        from .modeling_progen_vllm import ProGenForCausalLM as ProGenForCausalLMVLLM
+        from vllm import LLM
         assert (speculative_model is None) == (num_speculative_tokens is None), (
             "speculative_model and num_speculative_tokens must be both None or both "
             "not None"

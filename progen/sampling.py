@@ -9,8 +9,6 @@ import random
 import torch
 
 import numpy as np
-from vllm import LLM, SamplingParams
-from vllm.inputs.data import TokensPrompt
 
 
 def sample(device, model, tokenizer, context, max_length, num_return_sequences, top_p, temp, pad_token_id):
@@ -22,7 +20,9 @@ def sample(device, model, tokenizer, context, max_length, num_return_sequences, 
         return tokenizer.decode_batch(as_lists(tokens_batch))
 
 
-def sample_vllm(device, model: LLM, tokenizer, context, max_length, num_return_sequences, top_p, temp, frequency_penalty):
+def sample_vllm(device, model: 'LLM', tokenizer, context, max_length, num_return_sequences, top_p, temp, frequency_penalty):
+    from vllm import LLM, SamplingParams
+    from vllm.inputs.data import TokensPrompt
     """Sample from the VLLM model."""
     sampling_params = SamplingParams(
         n=num_return_sequences,
@@ -64,7 +64,9 @@ def cross_entropy(logits, target, reduction='mean'):
     return torch.nn.functional.cross_entropy(input=logits, target=target, weight=None, size_average=None, reduce=None, reduction=reduction)
 
 
-def compute_prompt_cross_entropy_vllm(llm: LLM, prompt: str, device, tokenizer=None) -> float:
+def compute_prompt_cross_entropy_vllm(llm: 'LLM', prompt: str, device, tokenizer=None) -> float:
+    from vllm import LLM, SamplingParams
+    from vllm.inputs.data import TokensPrompt
     """Computes the cross-entropy of a prompt with the model.
 
     The prompt should already be prepended with either a 1 or 2 token.
