@@ -198,6 +198,7 @@ def main():
                 num_samples=args.num_samples,
                 max_len=args.max_length,
                 speculative_model=args.speculative_model,
+                num_speculative_tokens=args.num_speculative_tokens
             )
 
             write_to_fasta(truncations, pathlib.Path(save_dir) / "generated.fasta")
