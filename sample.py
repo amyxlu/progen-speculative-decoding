@@ -3,22 +3,22 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # For full license text, see the LICENSE file in the repo root or https://opensource.org/licenses/BSD-3-Clause
 
-
 import argparse
 import json
 import pathlib
 
 import torch
+import numpy as np
 
 import benchmark_functions
 from progen.sampling import compute_prompt_cross_entropy_vllm, sample, sample_vllm, cross_entropy, truncate
-from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time, get_benchmark_results_save_dir
+from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time, get_benchmark_results_save_dir, write_to_fasta
 import logger as logger_utils
 
 
 TIME_BENCHMARK_DIR = "benchmark"
 SPEC_DECODE_METRICS_DIR = "spec_decode_metrics"
-
+SAMPLES_DIR = "samples"
 
 def none_or_val(value, dtype=str):
     return None if value == 'None' else dtype(value)
@@ -78,6 +78,7 @@ def main():
 
     set_env()
     set_seed(args.rng_seed, deterministic=args.rng_deterministic)
+    save_dir = None
 
     if not torch.cuda.is_available():
         print('falling back to cpu')
@@ -166,6 +167,10 @@ def main():
     # (5) sample
 
     if args.sample:
+        from progen.evaluation import RITAPerplexity
+
+        RITA_perplexity = RITAPerplexity(device=device) 
+
         with print_time('sampling'):
             if args.use_vllm:
                 completions, outputs = sample_vllm(
@@ -186,12 +191,31 @@ def main():
 
             print(args.context)
 
+            save_dir = get_benchmark_results_save_dir(
+                root_dir=SAMPLES_DIR,
+                model_name=args.model,
+                use_vllm=args.use_vllm,
+                num_samples=args.num_samples,
+                max_len=args.max_length,
+                speculative_model=args.speculative_model,
+            )
+
+            write_to_fasta(truncations, pathlib.Path(save_dir) / "generated.fasta")
+
+            all_rita_ppls = []
+
             for (i, truncation) in enumerate(truncations):
+                rita_ppl = RITA_perplexity.calc_perplexity(truncation)
+                all_rita_ppls.append(rita_ppl)
 
                 print()
                 print(i)
-                print(truncation)
+                print(truncation, rita_ppl)
+                
+            with open(pathlib.Path(save_dir) / "rita_perplexity.txt", "w") as f:
+                f.write(str(np.mean(all_rita_ppls)))
 
+            
     # (6) Spec decoding metrics
     if args.log_spec_decode_metrics:
         save_dir = get_benchmark_results_save_dir(

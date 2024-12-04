@@ -3,7 +3,8 @@ import time
 import os
 import abc
 import datetime
-from typing import Tuple, Union
+from pathlib import Path
+from typing import Tuple, Union, Optional, List
 
 import torch
 from torch import Tensor
@@ -56,6 +57,29 @@ def get_benchmark_results_save_dir(
         path += f"-{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
 
     return os.path.join(root_dir, path)
+
+
+def write_to_fasta(sequences, outpath, headers: Optional[List[str]] = None):
+    outpath = Path(outpath)
+    if not outpath.parent.exists():
+        outpath.parent.mkdir(parents=True, exist_ok=True)
+    
+    if isinstance(sequences, str):
+        sequences = [sequences]
+    
+    if isinstance(headers, str):
+        headers = [headers]
+    
+    if headers is None:
+        headers = [f"sequence_{i}" for i in range(len(sequences))]
+    
+    assert len(headers) == len(sequences)
+
+    with open(outpath, "w") as f:
+        for i, seq in enumerate(sequences):
+            f.write(f">{headers[i]}\n")
+            f.write(f"{seq}\n")
+    print(f"Wrote {len(sequences)} sequences to {outpath}.")
 
 
 ########################################################################
