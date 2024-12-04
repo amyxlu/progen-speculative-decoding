@@ -273,6 +273,7 @@ def main():
             )
         else:
             if args.speculative_model is not None:
+                print('batch_size:', args.batch_size)
                 results = benchmark_functions.benchmark_batch_spec_model(
                     target_model=model,
                     draft_model=spec_model,
@@ -300,6 +301,7 @@ def main():
             num_samples=args.num_samples,
             max_len=args.max_length,
             speculative_model=args.speculative_model,
+            num_speculative_tokens=args.num_speculative_tokens,
             bsn=args.bsn,
             batch_size=args.batch_size,
         )

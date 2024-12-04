@@ -171,6 +171,7 @@ def benchmark_vllm_model(
         "do_bench_kwargs": kwargs,
     }
 
+from tqdm import trange
 
 def benchmark_batch_spec_model(
     draft_model,
@@ -193,7 +194,7 @@ def benchmark_batch_spec_model(
     assert frequency_penalty == 0, "Frequency penalty is not supported for batched speculative decoding."
     pad_token_id=tokenizer.encode('<|pad|>').ids[0] 
     def generate():
-        for i in range(0, num_samples, batch_size):
+        for i in trange(0, num_samples, batch_size):
             input_ids = [tokenizer.encode(context).ids.copy() for _ in range(min(batch_size, num_samples - i))]
             ids_list, accept_rate = speculative_generate_batched(
                 inputs = input_ids,
