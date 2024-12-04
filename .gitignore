@@ -15,3 +15,4 @@ __pycache__
 slurm/
 benchmark*/
 spec_decode_metrics/
+samples*/
