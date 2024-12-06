@@ -61,6 +61,7 @@ def main():
     parser.add_argument('--ngram_prompt_lookup_max', type=int, default=4)
     parser.add_argument('--rope_dtype', type=str, default='float32')
     parser.add_argument('--bsn', type=str, default=None)
+    parser.add_argument('--log_to_wandb', default=False, type=lambda x: (str(x).lower() == 'true'))
     args = parser.parse_args()
 
     assert not (
@@ -215,7 +216,16 @@ def main():
                 
             with open(pathlib.Path(save_dir) / "rita_perplexity.txt", "w") as f:
                 f.write(str(np.mean(all_rita_ppls)))
-
+            
+            if args.log_to_wandb:
+                import wandb
+                wandb.init(project="progen2-sampling",config=vars(args))
+                wandb.log({
+                    "rita_perplexity_mean": np.mean(all_rita_ppls),
+                    "rita_perplexity_std": np.std(all_rita_ppls),
+                    "rita_perplexity_hist": wandb.Histogram(sequence=all_rita_ppls),
+                })
+                wandb.finish()
             
     # (6) Spec decoding metrics
     if args.log_spec_decode_metrics:

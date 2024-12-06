@@ -22,6 +22,7 @@ SANITY=${SANITY:-False}
 SAMPLE=${SAMPLE:-False}
 BENCHMARK=${BENCHMARK:-True}
 LOG_SPEC_DECODE_METRICS=${LOG_SPEC_DECODE_METRICS:-False}
+LOG_TO_WANDB=${LOG_TO_WANDB:-False}
 
 python sample.py \
     --model=$MODEL \
@@ -38,4 +39,5 @@ python sample.py \
     --sanity=$SANITY \
     --sample=$SAMPLE \
     --benchmark=$BENCHMARK \
-    --log_spec_decode_metrics=$LOG_SPEC_DECODE_METRICS
+    --log_spec_decode_metrics=$LOG_SPEC_DECODE_METRICS \
+    --log_to_wandb=$LOG_TO_WANDB
