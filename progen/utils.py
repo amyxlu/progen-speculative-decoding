@@ -10,10 +10,8 @@ from torch import Tensor
 from tokenizers import Tokenizer
 from transformers.cache_utils import DynamicCache
 from torch.nn import functional as F
-from vllm import LLM
 
 from .modeling_progen import ProGenForCausalLM
-from .modeling_progen_vllm import ProGenForCausalLM as ProGenForCausalLMVLLM
 
 
 class print_time:
@@ -44,12 +42,15 @@ def set_seed(seed, deterministic=True):
 
 def get_benchmark_results_save_dir(
     root_dir, model_name, use_vllm, num_samples, max_len, speculative_model,
+    num_speculative_tokens=None,
+    batch_size=1,
     add_timestamp=True, bsn=None,
 ):
     path = f"{model_name}/vllm_{use_vllm}_samples_{num_samples}_len_{max_len}"
     if speculative_model is not None:
         path += f"_spec_{speculative_model}"
-
+    path += f"_bs_{batch_size}"
+    path += f"_spec_tokens_{num_speculative_tokens}"
     if bsn is not None:
         path += f"_{bsn}"
     elif add_timestamp:
@@ -73,9 +74,13 @@ def create_model(
     ngram_prompt_lookup_max=4,
     rope_dtype="float32",
     disable_log_stats=False,
+    flash_attention=False, # non-vllm config
+    ragged_batches=False # non-vllm config
     use_cache=False,
 ):
     if use_vllm:
+        from .modeling_progen_vllm import ProGenForCausalLM as ProGenForCausalLMVLLM
+        from vllm import LLM
         assert (speculative_model is None) == (num_speculative_tokens is None), (
             "speculative_model and num_speculative_tokens must be both None or both "
             "not None"
@@ -104,9 +109,16 @@ def create_model(
 
     assert rope_dtype == "float32", "rope_dtype must be float32 when not using VLLM"
     if fp16:
-        return ProGenForCausalLM.from_pretrained(ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True, use_cache=use_cache)
+        model = ProGenForCausalLM.from_pretrained(
+            ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True,
+            flash_attention=flash_attention, ragged_batches=ragged_batches, use_cache=use_cache
+        )
     else:
-        return ProGenForCausalLM.from_pretrained(ckpt, use_cache=use_cache)
+        model = ProGenForCausalLM.from_pretrained(
+            ckpt,
+            flash_attention=flash_attention, ragged_batches=ragged_batches, use_cache=use_cache)
+    model.eval()
+    return model
 
 
 def create_tokenizer_custom(file):

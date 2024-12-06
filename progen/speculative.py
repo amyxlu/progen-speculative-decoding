@@ -200,4 +200,375 @@ def speculative_generate(
     
     return input_ids[0, prompt_len:].tolist(), drafts_accepted / drafts_speculated
 
+def drop_none(lst):
+    return [x for x in lst if x is not None]
+def drop_zip(lst, short):
+    short_iter = iter(short)
+    for x in lst:
+        if x is None:
+            yield None, None
+        else:
+            yield x, next(short_iter)
+
+from progen.pad_utils import pad_batch
+from copy import deepcopy
+
+class CacheHandler:
+    '''
+    Invariant: inputs should faithfully track what the cache currently contains
+    '''
+    def __init__(self):
+        self.inputs = None
+        self.dead_inputs = dict()
+        self.dead_caches = dict()
+    def set_inputs(self, inputs):
+        self.inputs = deepcopy(inputs)
+    def prepare_for_forward(self, inputs, kv_cache, draft_lengths=None):
+        '''
+        Takes inputs,  kv_cache.
+        Returns inputs ready for padding and batching.
+        Returns kv_cache ready for forward.
+        '''
+        if self.inputs is None:
+            return inputs, kv_cache
+        # drop rows from self.inputs
+        dropped_rows = []
+        dead_idxs = []
+        ctr = 0
+        revived_idxs = []
+        for i, (seq, new_seq) in enumerate(zip(self.inputs, inputs)):
+            if seq is not None and new_seq is None:
+                dropped_rows.append(ctr)
+                dead_idxs.append(i)
+            if seq is None and new_seq is not None:
+                revived_idxs.append(i)
+            if seq is not None:
+                ctr += 1
+        dropped_kv_cache, dead_kv_caches = drop_cache_seqs(kv_cache, dropped_rows)
+        dead_kv_caches = rotate_batch_outwards(dead_kv_caches)
+        for dead_idx, dead_cache in zip(dead_idxs, dead_kv_caches):
+            self.dead_inputs[dead_idx] = self.inputs[dead_idx]
+            self.dead_caches[dead_idx] = dead_cache
+            self.inputs[dead_idx] = None
+        tagged_idxes = [(i, 'alive') for i in range(len(inputs)) if self.inputs[i] is not None] + [(i, 'revive') for i in revived_idxs]
+        tagged_idxes.sort(key=lambda x: x[0])
+        insertion_ids = [i for i, (_, tag) in enumerate(tagged_idxes) if tag == 'revive']
+        insertion_caches = [self.dead_caches[i] for i in revived_idxs]
+        dropped_kv_cache = insert_cache_seqs(dropped_kv_cache, insertion_ids, insertion_caches)
+        for idx in revived_idxs:
+            self.inputs[idx] = self.dead_inputs[idx]
+            del self.dead_inputs[idx]
+            del self.dead_caches[idx]
+        # now, truncate appropriately
+        ctr = 0
+        new_inputs = []
+        for i, (seq, new_seq) in enumerate(zip(self.inputs, inputs)):
+            if seq is not None:
+                # find longest common prefix
+                prefix_len = 0
+                for a, b in zip(seq, new_seq):
+                    if a == b:
+                        prefix_len += 1
+                    else:
+                        break
+                if draft_lengths is not None:
+                    prefix_len = min(prefix_len, len(new_seq) - draft_lengths[i])
+                new_inputs.append(new_seq[prefix_len:])
+                dropped_kv_cache = prune_cache_ragged(dropped_kv_cache, ctr, len(seq) - prefix_len)
+                self.inputs[i] = seq[:prefix_len]
+
+                ctr += 1
+            else:
+                new_inputs.append(None)
+        for initial_seq, new_seq in zip(inputs, new_inputs):
+            assert (initial_seq is None) == (new_seq is None)
+        assert len(dropped_kv_cache[0][0]) == len(drop_none(self.inputs))
+        assert len(dropped_kv_cache[0][0]) == len(drop_none(new_inputs))
+        return new_inputs, dropped_kv_cache
+
+def prune_cache_ragged(cache, batch_idx: int, num_tokens_to_discard: int):
+    """
+    Prune the cache by removing the specified number of tokens from the end.
+
+    Args:
+        cache
+        batch_idx (int): The index of the batch to prune.
+        num_tokens_to_discard (int): The number of tokens to discard from the end of the cache.
+
+    Returns:
+    The pruned KV cache.
+    """
+    new_cache = []
+    for layer_cache in cache:
+        layer = []
+        for korv in layer_cache:
+            new_korv = []
+            for i, kv in enumerate(korv):
+                if i == batch_idx:
+                    new_kv = kv[:-num_tokens_to_discard, :, :] # seq, head, dim
+                    new_korv.append(new_kv)
+                else:
+                    new_korv.append(kv)
+            layer.append(new_korv)
+        new_cache.append(tuple(layer))
+    return tuple(new_cache)
+
+def drop_cache_seqs(kv_cache, dropped_rows):
+    new_cache = []
+    dead_cache = []
+    for layer_cache in kv_cache:
+        layer = []
+        dead_layer = []
+        for korv in layer_cache:
+            new_korv = []
+            dead_korv = []
+            for i, seq in enumerate(korv):
+                if i not in dropped_rows:
+                    new_korv.append(seq)
+                else:
+                    dead_korv.append(seq)
+            layer.append(new_korv)
+            dead_layer.append(dead_korv)
+        new_cache.append(tuple(layer))
+        dead_cache.append(tuple(dead_layer))
+    return tuple(new_cache), tuple(dead_cache)
+
+def rotate_batch_outwards(kv_cache):
+    batch_size = len(kv_cache[0][0])
+    return [
+        tuple(
+            tuple(
+                korv[i]
+                for korv in layer_cache
+            )
+            for layer_cache in kv_cache
+        )
+        for i in range(batch_size)
+    ]
+
+def insert_cache_seqs(kv_cache, insertion_ids, insertion_caches):
+    new_cache = []
+    for layer_id, layer_cache in enumerate(kv_cache):
+        layer = []
+        for korv_id, korv in enumerate(layer_cache):
+            new_korv = korv.copy() # shallow copy
+            for insertion_id, insertion_cache in zip(insertion_ids, insertion_caches):
+                new_korv.insert(insertion_id, insertion_cache[layer_id][korv_id])
+            layer.append(new_korv)
+        new_cache.append(tuple(layer))
+    return tuple(new_cache)
+
+
+@torch.no_grad()
+def speculative_generate_batched(
+    inputs: List[List[int]],
+    drafter: Module,
+    target: Module,
+    tokenizer = None,
+    gamma: int = 5,
+    logits_processor: LogitsProcessor = GreedyProcessor(),
+    max_gen_len: int = 512,
+    eos_tokens_id: int | List[int] = 1,
+    pad_token_id: int = 0,
+    use_cache: bool = False,
+    skip_sample_adjustment: bool = False,
+    first_target: bool = True,
+    debug: bool = False,
+) -> Tuple[List[int], float]:
+    """
+    Generate text sequence using the speculative decoding algorithm.
+    Implementation of Speculative Decoding. (https://arxiv.org/pdf/2211.17192.pdf)
+    
+    Args:
+        inputs (List[int]): input sequence of batch size 1.
+        drafter (Module): drafter model.
+        target (Module): target model.
+        tokenizer: tokenizer (used for debugging).
+        gamma (int): number of drafts generated by the drafter at each step.
+        logits_processor (LogitsProcessor): logits processor for sampling.
+        max_gen_len (int): maximum length of the generated sequence.
+        eos_tokens_id (int or List[int]): end token id (could be multiple).
+        pad_token_id (int): pad token id.
+        use_cache (bool): whether to use cache.
+        skip_sample_adjustment (bool): whether to skip the sample adjustment step when some drafts are discarded.
+        first_target (bool): whether to run the target model before the speculative algorithm.
+        debug (bool): debug mode.
+    
+    Returns:
+        List[int]: generated sequence.
+        float: acceptance rate (number of accepted drafts divided by the number of total drafts).
+        
+    Note: This generation methods only works for decoder-only models.
+    Note bis: The drafter and target models should output the same logits shape.
+    Note ter: NgramModels are currently not supported.
+    """
+    
+    drafter_cache, target_cache = None, None
+    drafter_cache_handler = CacheHandler()
+    target_cache_handler = CacheHandler()
+
+    list_tokens_id = eos_tokens_id if isinstance(eos_tokens_id, list) else [eos_tokens_id]
+    stop_tokens = torch.tensor(list_tokens_id, dtype=torch.long, device=target.device).unsqueeze(1)
+    
+    drafts_accepted, drafts_speculated = .0, .0
+    
+    vocabulary_size = target.config.vocab_size    
+        
+    # prepare input tensor
+    max_seq_length = target.config.max_position_embeddings if hasattr(target.config, 'max_position_embeddings') else (target.config.max_context_length if hasattr(target.config, 'max_context_length') else 1024)
+
+    inputs = deepcopy(inputs)
+    prompt_len = len(inputs)
+    total_len = min(max_seq_length, prompt_len + max_gen_len)
+    # input_ids = torch.full((1, total_len), pad_token_id, dtype=torch.long, device=target.device)
+    # input_ids[0, :prompt_len] = inputs
+    
+    current_position = prompt_len
+    batch_size = len(inputs)
+    completed = [None] * batch_size
+    
+    if first_target:
+        # run the target model before the speculative algorithm. Allows to prefill the kvcache and get a first token.
+        packed_inputs = pad_batch(drop_none(inputs), pad_token_id, padding_side='left').to(target.device)
+        Mp = target(
+            input_ids=packed_inputs.input_ids,
+            attention_mask=packed_inputs.attention_mask,
+            past_key_values=target_cache,
+            use_cache=use_cache,
+        )
+        target_cache_handler.set_inputs(inputs)
+        target_cache = Mp.past_key_values
+        p_p = logits_processor(Mp.logits[:, -1, :]) # logits is batch, seq, vocab
+        t = logits_processor.sample(p_p).flatten() # initially batch, 1
+        assert t.shape == (batch_size,), f'{t.shape} is not {batch_size}'
+        for seq, token in zip(drop_none(inputs), t):
+            seq.append(token.item())
+        
+        for i, tok in enumerate(t):
+            if torch.isin(tok, stop_tokens):
+                if debug:
+                    printing.end_token_found(0)
+                completed[i] = inputs[i]
+                inputs[i] = None
+            # return input_ids[0, prompt_len:current_position].tolist(), 0
+        if debug:
+            printing.initial_step(t, tokenizer)
+    
+    while drop_none(inputs):
+        # initialize current "block" to be produced by the drafter
+        # corrected_gamma = min(gamma, total_len - current_position - 1)
+        # q = torch.zeros((1, corrected_gamma, vocabulary_size), device=target.device)
+
+        q = torch.zeros((batch_size, gamma, vocabulary_size), device=target.device)
+        draft_inputs = [None if seq is None else seq.copy() for seq in inputs]
+        completed_drafts = [None] * batch_size
+        # generate gamma drafts
+        for k in range(gamma):
+            if not drop_none(draft_inputs):
+                break
+            initial_inputs = deepcopy(drafter_cache_handler.inputs)
+            truncated_inputs, drafter_cache = drafter_cache_handler.prepare_for_forward(draft_inputs, drafter_cache, [1 for _ in draft_inputs])
+            packed_inputs = pad_batch(drop_none(truncated_inputs), pad_token_id, padding_side='left').to(drafter.device)
+            Mq = drafter(
+                input_ids=packed_inputs.input_ids,
+                attention_mask=packed_inputs.attention_mask,
+                past_key_values=drafter_cache,
+                use_cache=use_cache,
+            )
+            # KV cache for drafter
+            drafter_cache = Mq.past_key_values
+            drafter_cache_handler.set_inputs(draft_inputs)
+            # perform sampling on drafter model
+            draft_probs = logits_processor(Mq.logits[:, -1, :])
+            xi = logits_processor.sample(draft_probs).flatten()
+            ctr = 0
+            assert xi.shape == (len(drop_none(draft_inputs)),)
+            for i, draft_seq in enumerate(draft_inputs):
+                if draft_seq is not None:
+                    draft_seq.append(xi[ctr].item())
+                    drafts_speculated += 1
+                    q[i, k] = draft_probs[ctr]
+                    if len(draft_seq) >= total_len:
+                        completed_drafts[i] = draft_seq
+                        draft_inputs[i] = None
+                    ctr += 1
+        completed_drafts = [
+            cdraft if cdraft is not None else draft
+            for cdraft, draft in zip(completed_drafts, draft_inputs)
+        ]
+        # run target model on drafts and get logits of the previous tokens plus one more token
+        minimum_lengths = [len(draft_seq) - len(seq) + 1 if seq is not None else None for seq, draft_seq in zip(inputs, completed_drafts)]
+        truncated_inputs, target_cache = target_cache_handler.prepare_for_forward(completed_drafts, target_cache, minimum_lengths)
+        packed_inputs = pad_batch(drop_none(truncated_inputs), pad_token_id, padding_side='left').to(target.device)
+        Mp = target(
+            input_ids=packed_inputs.input_ids,
+            attention_mask=packed_inputs.attention_mask,
+            past_key_values=target_cache,
+            use_cache=use_cache,
+        )
+
+        # kv cache for M_p (target model)
+        target_cache = Mp.past_key_values
+        target_cache_handler.set_inputs(completed_drafts)
+
+        ctr = 0
+        for seq_id, (seq, draft_seq) in enumerate(zip(inputs, completed_drafts)):
+            if seq is not None:
+                drafted_length = len(draft_seq) - len(seq)
+                assert len(truncated_inputs[seq_id]) >= drafted_length + 1
+                draft_logits = Mp.logits[ctr, -drafted_length - 1 : -1, :] # logits _for_ the draft tokens
+                p = logits_processor(draft_logits) # [gamma, vocab_size]
+                
+                # compute the last accepted draft position (rejection sampling)
+                r = torch.rand(drafted_length, device=target.device)
+                fractions = p / q[seq_id, :drafted_length]
+                n = drafted_length
+
+                # reject if r > frac; n is the number of accepted guesses.
+                for i in range(drafted_length):
+                    if r[i] > fractions[i, draft_seq[-drafted_length + i]]:
+                        n = i
+                drafts_accepted += n
+
+                # check if the end token is in the drafts
+                stop_locations = torch.nonzero(torch.eq(torch.tensor(draft_seq[-drafted_length:-drafted_length + n], device=target.device), stop_tokens))
+                if stop_locations.shape[0] > 0:
+                    stop_location = stop_locations[0, 1].item()
+                    if debug:
+                        printing.end_token_found(stop_location)
+                    completed[seq_id] = draft_seq[ :-draft_seq + stop_location + 1]
+                    inputs[seq_id] = None
+                else:
+                    # adjust the distribution from Mp
+                    if n == drafted_length:
+                        p_p = Mp.logits[ctr, -1, :]
+                        p_p = logits_processor(p_p)
+                    else:
+                        if not skip_sample_adjustment:
+                            p_p = max_fn(p[..., n, :] - q[0, n, :])
+                        else:
+                            p_p = p[..., n, :]
+                    x = logits_processor.sample(p_p)
+                    
+                    seq.extend(draft_seq[len(seq) : len(draft_seq)-drafted_length + n] + [x.item()])
+                    
+                    # if debug:
+                    #     printing.speculative_step(tokenizer, generated, torch.tensors([seq]), n, prompt_len, current_position, drafted_length)
+                        
+                    current_position += n + 1
+                    
+                    if torch.isin(x, stop_tokens):
+                        if debug:
+                            printing.end_token_found(n)
+                        completed[seq_id] = inputs[seq_id]
+                        inputs[seq_id] = None
+                    elif len(seq) >= total_len:
+                        completed[seq_id] = seq
+                        inputs[seq_id] = None
+                        print(f'Completed {seq_id}')
+                ctr += 1
+
+    
+    return completed, drafts_accepted / drafts_speculated
+
 

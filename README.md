@@ -14,7 +14,7 @@ To download checkpoints (note: use `sfr-progen-research` instead of `anon-progen
 ```
 model=progen2-small
 wget -P checkpoints/${model} https://storage.googleapis.com/sfr-progen-research/checkpoints/${model}.tar.gz
-tar -xvf checkpoints/${model}/${model}.tar.gz -C checkpoints/${model}/
+tar -xvf /data/fjiahai/checkpoints/${model}/${model}.tar.gz -C checkpoints/${model}/
 ```
 
 Repeat for `model=progen2-xlarge`.
@@ -33,6 +33,11 @@ Without vllm:
 python sample.py --model progen2-xlarge --num-samples 1 --max-length 512 --use_vllm=False
 ```
 
+with ragged batches:
+```
+python sample.py --fp16 False --ragged-batches true --model progen2-xlarge
+```
+
 ## Run modes
 
 `sample.py` provides four main run modes:
@@ -42,13 +47,37 @@ python sample.py --model progen2-xlarge --num-samples 1 --max-length 512 --use_v
 - `--benchmark`: whether to run the timing benchmark.
 - `--log_spec_decode_metrics`: whether to log speculative decoding metrics. This is mutually exclusive with `--sample=True` and `--benchmark=True`, and requires `--use_vllm=True`.
 
+Benchmarking with ragged batches:
+```sh
+python sample.py \
+  --fp16 False \
+  --ragged-batches true \
+  --use_vllm False \
+  --model progen2-xlarge \
+  --speculative_model progen2-small \
+  --num_speculative_tokens 5 \
+  --batch_size 1 \
+  --benchmark true \
+  --sanity false \
+  --sample false
+```
+
 ## Sampling with Speculative Decoding
 ```
 python run_speculative_sampling.py \
   --draft_model progen2-small \
   --target_model progen2-xlarge \
-  --num-reruns 8 \  # batch size is always 1; this just loops the speculative
-  decoding function
+  --num-reruns 8 \
+  --max-length 512
+```
+
+With ragged batches. This will also automatically run batched speculative decoding.
+```
+python run_speculative_sampling.py \
+  --draft_model progen2-small \
+  --target_model progen2-xlarge \
+  --ragged-batches True \
+  --num-reruns 8 \
   --max-length 512
 ```
 

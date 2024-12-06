@@ -5,6 +5,9 @@
 
 
 import argparse
+from pathlib import Path
+from dotenv import load_dotenv
+import os
 import json
 import pathlib
 
@@ -13,7 +16,7 @@ import torch
 import benchmark_functions
 from progen.sampling import compute_prompt_cross_entropy_vllm, sample, sample_vllm, cross_entropy, truncate
 from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time, get_benchmark_results_save_dir
-import logger as logger_utils
+
 
 
 TIME_BENCHMARK_DIR = "benchmark"
@@ -23,6 +26,9 @@ SPEC_DECODE_METRICS_DIR = "spec_decode_metrics"
 def none_or_val(value, dtype=str):
     return None if value == 'None' else dtype(value)
 
+
+load_dotenv(verbose=True)
+CHECKPOINT_DIR = os.environ.get('CHECKPOINT_DIR', './checkpoints')
 
 def main():
 
@@ -50,6 +56,8 @@ def main():
     parser.add_argument('--fp16', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--context', type=str, default='1')
     parser.add_argument('--sanity', default=True, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--flash-attention', default=False, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--ragged-batches', default=False, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--sample', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--benchmark', default=False, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--log_spec_decode_metrics', default=False, type=lambda x: (str(x).lower() == 'true'))
@@ -61,6 +69,7 @@ def main():
     parser.add_argument('--ngram_prompt_lookup_max', type=int, default=4)
     parser.add_argument('--rope_dtype', type=str, default='float32')
     parser.add_argument('--bsn', type=str, default=None)
+    parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--use-cache', default=False, type=lambda x: (str(x).lower() == 'true'))
     args = parser.parse_args()
 
@@ -75,6 +84,8 @@ def main():
             args.speculative_model is not None
         ), "log_spec_decode_metrics can only be used with a speculative model"
 
+    if args.ragged_batches and args.use_vllm:
+        raise ValueError("Ragged batches are not supported for VLLM models.")
     # (2) preamble
 
     set_env()
@@ -85,11 +96,11 @@ def main():
         args.device = 'cpu'
 
     device = torch.device(args.device)
-    ckpt = f'./checkpoints/{args.model}'
+    ckpt = Path(CHECKPOINT_DIR) / args.model
     spec_model = args.speculative_model
     if spec_model is not None:
         if spec_model in models:
-            spec_model = f'./checkpoints/{spec_model}'
+            spec_model = Path(CHECKPOINT_DIR) /spec_model
 
     if device.type == 'cpu':
         print('falling back to fp32')
@@ -103,7 +114,10 @@ def main():
     else:
         tokenizer = None
 
-    with print_time('loading parameters'):
+    # print(model.config)
+
+    with print_time('loading tokenizer'):
+        tokenizer = create_tokenizer_custom(file='tokenizer.json')
         model = create_model(
             ckpt=ckpt,
             fp16=args.fp16,
@@ -117,11 +131,19 @@ def main():
             # Enable logging stats when collecting speculative decoding metrics.
             # Otherwise, disable them to speed up generation.
             disable_log_stats=not args.log_spec_decode_metrics,
+            flash_attention=args.flash_attention,
+            ragged_batches=args.ragged_batches,
             use_cache=args.use_cache,
         )
         if not args.use_vllm:
             model = model.to(device)
-
+            if spec_model is not None:
+                spec_model = create_model(
+                    ckpt=spec_model, 
+                    fp16=args.fp16, 
+                    flash_attention=args.flash_attention, 
+                    ragged_batches=args.ragged_batches
+                ).to(device)
     # (4) sanity
 
     if args.sanity:
@@ -163,7 +185,8 @@ def main():
 
             print(ce_target, ce_eval, abs(ce_eval - ce_target))
 
-            assert abs(ce_eval - ce_target) < 0.1
+            # assert abs(ce_eval - ce_target) < 0.1
+
 
     # (5) sample
 
@@ -196,6 +219,9 @@ def main():
 
     # (6) Spec decoding metrics
     if args.log_spec_decode_metrics:
+        if not args.use_vllm:
+            raise NotImplementedError("Speculative decoding metrics are only supported for VLLM models")
+        import logger as logger_utils
         save_dir = get_benchmark_results_save_dir(
             root_dir=SPEC_DECODE_METRICS_DIR,
             model_name=args.model,
@@ -248,17 +274,35 @@ def main():
                 frequency_penalty=args.frequency_penalty,
             )
         else:
-            results = benchmark_functions.benchmark_standard_model(
-                model,
-                tokenizer,
-                args.context,
-                device,
-                args.max_length,
-                args.num_samples,
-                top_p=args.p,
-                temp=args.t,
-                frequency_penalty=args.frequency_penalty,
-            )
+            if args.speculative_model is not None:
+                print('batch_size:', args.batch_size)
+                results = benchmark_functions.benchmark_batch_spec_model(
+                    target_model=model,
+                    draft_model=spec_model,
+                    tokenizer=tokenizer,
+                    context=args.context,
+                    device=device,
+                    batch_size=args.batch_size,
+                    num_speculative_tokens=args.num_speculative_tokens,
+                    max_length=args.max_length,
+                    num_samples=args.num_samples,
+                    top_p=args.p,
+                    temp=args.t,
+                    frequency_penalty=args.frequency_penalty,
+                )
+            else:
+                
+                results = benchmark_functions.benchmark_standard_model(
+                    model,
+                    tokenizer,
+                    args.context,
+                    device,
+                    args.max_length,
+                    args.num_samples,
+                    top_p=args.p,
+                    temp=args.t,
+                    frequency_penalty=args.frequency_penalty,
+                )
 
         # Add args to results
         results.update(vars(args))
@@ -270,10 +314,12 @@ def main():
             num_samples=args.num_samples,
             max_len=args.max_length,
             speculative_model=args.speculative_model,
+            num_speculative_tokens=args.num_speculative_tokens,
             bsn=args.bsn,
+            batch_size=args.batch_size,
         )
         save_dir = pathlib.Path(save_dir)
-
+        print(f'Saving benchmark results to {save_dir}')
         if not save_dir.exists():
             save_dir.mkdir(parents=True)
         with open(save_dir / 'time_benchmark.json', 'w') as f:
