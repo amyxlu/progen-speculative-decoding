@@ -171,6 +171,51 @@ def benchmark_vllm_model(
         "do_bench_kwargs": kwargs,
     }
 
+def benchmark_standard_model(
+    model,
+    tokenizer,
+    context,
+    device,
+    max_length,
+    num_samples,
+    top_p,
+    temp,
+    frequency_penalty,
+    n_warmup=3,
+    n_repeat=10,
+):
+    with torch.no_grad():
+        input_ids = torch.tensor(tokenizer.encode(context).ids).view([1, -1]).to(device)
+
+    
+    def generate():
+        model.generate(input_ids, do_sample=True, temperature=temp, max_length=max_length, top_p=top_p, num_return_sequences=num_samples, pad_token_id=tokenizer.encode('<|pad|>').ids[0])
+
+    # Input kwargs
+    kwargs = dict(
+        n_warmup=n_warmup,
+        warmup_time=None,
+        n_repeat=n_repeat,
+        rep_time=None,
+        grad_to_none=None,
+        quantiles=[0.1, 0.25, 0.5, 0.75, 0.9],
+        fast_flush=True,
+        return_mode="mean",
+        device_type="cuda",
+    )
+
+    avg_time, std_dev, quantiles, times = custom_do_bench(generate, **kwargs)
+    print(f"Average time: {avg_time} ms, Standard deviation: {std_dev} ms")
+    print(f"Quantiles: {quantiles}")
+    print(f"Times: {times}")
+
+    return {
+        "avg_time": avg_time,
+        "std": std_dev,
+        "quantiles": quantiles,
+        "times": times,
+        "do_bench_kwargs": kwargs,
+    }
 
 def collect_speculative_decoding_metrics(
     model,

@@ -61,6 +61,7 @@ def main():
     parser.add_argument('--ngram_prompt_lookup_max', type=int, default=4)
     parser.add_argument('--rope_dtype', type=str, default='float32')
     parser.add_argument('--bsn', type=str, default=None)
+    parser.add_argument('--use-cache', default=False, type=lambda x: (str(x).lower() == 'true'))
     args = parser.parse_args()
 
     assert not (
@@ -116,6 +117,7 @@ def main():
             # Enable logging stats when collecting speculative decoding metrics.
             # Otherwise, disable them to speed up generation.
             disable_log_stats=not args.log_spec_decode_metrics,
+            use_cache=args.use_cache,
         )
         if not args.use_vllm:
             model = model.to(device)
@@ -246,7 +248,17 @@ def main():
                 frequency_penalty=args.frequency_penalty,
             )
         else:
-            raise NotImplementedError('benchmarking not implemented for non-VLLM models')
+            results = benchmark_functions.benchmark_standard_model(
+                model,
+                tokenizer,
+                args.context,
+                device,
+                args.max_length,
+                args.num_samples,
+                top_p=args.p,
+                temp=args.t,
+                frequency_penalty=args.frequency_penalty,
+            )
 
         # Add args to results
         results.update(vars(args))

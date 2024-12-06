@@ -73,6 +73,7 @@ def create_model(
     ngram_prompt_lookup_max=4,
     rope_dtype="float32",
     disable_log_stats=False,
+    use_cache=False,
 ):
     if use_vllm:
         assert (speculative_model is None) == (num_speculative_tokens is None), (
@@ -103,9 +104,9 @@ def create_model(
 
     assert rope_dtype == "float32", "rope_dtype must be float32 when not using VLLM"
     if fp16:
-        return ProGenForCausalLM.from_pretrained(ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True)
+        return ProGenForCausalLM.from_pretrained(ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True, use_cache=use_cache)
     else:
-        return ProGenForCausalLM.from_pretrained(ckpt)
+        return ProGenForCausalLM.from_pretrained(ckpt, use_cache=use_cache)
 
 
 def create_tokenizer_custom(file):
