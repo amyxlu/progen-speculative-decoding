@@ -219,7 +219,7 @@ def main():
             
             if args.log_to_wandb:
                 import wandb
-                wandb.init(project="progen2-sampling",config=vars(args))
+                wandb.init(project="progen2-sampling",config=vars(args),entity="amyxlu")
                 wandb.log({
                     "rita_perplexity_mean": np.mean(all_rita_ppls),
                     "rita_perplexity_std": np.std(all_rita_ppls),

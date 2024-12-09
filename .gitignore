@@ -16,3 +16,4 @@ slurm/
 benchmark*/
 spec_decode_metrics/
 samples*/
+wandb*/
