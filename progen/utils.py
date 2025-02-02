@@ -45,7 +45,7 @@ def set_seed(seed, deterministic=True):
 
 def get_benchmark_results_save_dir(
     root_dir, model_name, use_vllm, num_samples, max_len, speculative_model,
-    add_timestamp=True, bsn=None, num_speculative_tokens=None
+    add_timestamp=True, bsn=None, num_speculative_tokens=None, make_unique=True
 ):
     path = f"{model_name}/vllm_{use_vllm}_samples_{num_samples}_len_{max_len}"
     if speculative_model is not None:
@@ -59,23 +59,31 @@ def get_benchmark_results_save_dir(
     elif add_timestamp:
         path += f"-{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
 
-    return os.path.join(root_dir, path)
+    path = os.path.join(root_dir, path)
+
+    if make_unique:
+        id = 0
+        while os.path.exists(path):
+            path = f"{path}_{id}"
+            id += 1
+
+    return path
 
 
 def write_to_fasta(sequences, outpath, headers: Optional[List[str]] = None):
     outpath = Path(outpath)
     if not outpath.parent.exists():
         outpath.parent.mkdir(parents=True, exist_ok=True)
-    
+
     if isinstance(sequences, str):
         sequences = [sequences]
-    
+
     if isinstance(headers, str):
         headers = [headers]
-    
+
     if headers is None:
         headers = [f"sequence_{i}" for i in range(len(sequences))]
-    
+
     assert len(headers) == len(sequences)
 
     with open(outpath, "w") as f:
