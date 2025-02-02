@@ -23,12 +23,12 @@ def to_tensor(x, device=None, dtype=None):
 
 
 class RITAPerplexity:
-    def __init__(self, device="cuda"):
+    def __init__(self, model="lightonai/RITA_xl", device="cuda"):
         self.device = device
-        self.model = AutoModelForCausalLM.from_pretrained("lightonai/RITA_xl", trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(model, trust_remote_code=True)
         self.model.to(self.device)
         self.model.eval().requires_grad_(False)
-        self.tokenizer = AutoTokenizer.from_pretrained("lightonai/RITA_xl")
+        self.tokenizer = AutoTokenizer.from_pretrained(model)
 
     def calc_perplexity(self, sequence):
         """Calculates the perplexity under RITA for a single model"""
