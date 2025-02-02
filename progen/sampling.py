@@ -12,14 +12,47 @@ import numpy as np
 from vllm import LLM, SamplingParams
 from vllm.inputs.data import TokensPrompt
 
+from progen import speculative
 
-def sample(device, model, tokenizer, context, max_length, num_return_sequences, top_p, temp, pad_token_id):
+
+def sample(device, model, tokenizer, context, max_length, num_return_sequences, top_p, temp, pad_token_id, eos_token_id, spec_model=None, num_speculative_tokens=1):
     """ Original ProGen top-p sampling."""
+    if spec_model is None:
+        def generate(input_ids):
+            return model.generate(
+                input_ids,
+                do_sample=True,
+                temperature=temp,
+                max_length=max_length,
+                top_p=top_p,
+                num_return_sequences=num_return_sequences,
+                pad_token_id=pad_token_id,
+            )
+    else:
+        assert num_return_sequences == 1, "Speculative decoding without vllm only supports num_return_sequences=1"
+        def generate(input_ids):
+            tokens, acceptance_rate = speculative.speculative_generate(
+                inputs=input_ids,
+                drafter=spec_model,
+                target=model,
+                gamma=num_speculative_tokens,
+                max_gen_len=max_length,
+                eos_tokens_id=eos_token_id,
+                pad_token_id=pad_token_id,
+            )
+            return [tokens]
+
     with torch.no_grad():
+        # [1, 1]
         input_ids = torch.tensor(tokenizer.encode(context).ids).view([1, -1]).to(device)
-        tokens_batch = model.generate(input_ids, do_sample=True, temperature=temp, max_length=max_length, top_p=top_p, num_return_sequences=num_return_sequences, pad_token_id=pad_token_id)
-        as_lists = lambda batch: [batch[i, ...].detach().cpu().numpy().tolist() for i in range(batch.shape[0])]
-        return tokenizer.decode_batch(as_lists(tokens_batch))
+        # [num_samples, max_length]
+        tokens_batch = generate(input_ids)
+        if isinstance(tokens_batch, torch.Tensor):
+            tokens_batch = [
+                tokens_batch[i, ...].detach().cpu().numpy().tolist()
+                for i in range(tokens_batch.shape[0])
+            ]
+        return tokenizer.decode_batch(tokens_batch)
 
 
 def sample_vllm(device, model: LLM, tokenizer, context, max_length, num_return_sequences, top_p, temp, frequency_penalty):
