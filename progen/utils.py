@@ -4,7 +4,7 @@ import os
 import abc
 import datetime
 from pathlib import Path
-from typing import Tuple, Union, Optional, List
+from typing import Tuple, Union, Optional, List, Literal
 
 import torch
 from torch import Tensor
@@ -61,10 +61,13 @@ def get_benchmark_results_save_dir(
 
     path = os.path.join(root_dir, path)
 
-    if make_unique:
+    if make_unique and os.path.exists(path):
         id = 0
-        while os.path.exists(path):
-            path = f"{path}_{id}"
+        while True:
+            new_path = f"{path}_{id}"
+            if not os.path.exists(new_path):
+                path = new_path
+                break
             id += 1
 
     return path
@@ -100,7 +103,7 @@ def write_to_fasta(sequences, outpath, headers: Optional[List[str]] = None):
 def create_model(
     ckpt,
     fp16=True,
-    use_vllm=False,
+    use_vllm=True,
     tokenizer=None,
     speculative_model=None,
     num_speculative_tokens=None,
@@ -108,6 +111,7 @@ def create_model(
     ngram_prompt_lookup_max=4,
     rope_dtype="float32",
     disable_log_stats=False,
+    **kwargs,
 ):
     if use_vllm:
         assert (speculative_model is None) == (num_speculative_tokens is None), (
@@ -134,6 +138,7 @@ def create_model(
             ngram_prompt_lookup_min=ngram_prompt_lookup_min,
             ngram_prompt_lookup_max=ngram_prompt_lookup_max,
             disable_log_stats=disable_log_stats,
+            **kwargs,
         )
 
     assert rope_dtype == "float32", "rope_dtype must be float32 when not using VLLM"
@@ -184,6 +189,9 @@ class MultinomialProcessor(LogitsProcessor):
     """Multinomial: Random sampling."""
 
     def __init__(self, temperature: float):
+        if temperature == 0:
+            raise ValueError("Multinomial sampling requires a non-zero temperature.")
+
         super().__init__(temperature)
 
     def _process(self, logits: Tensor) -> Tensor:
@@ -249,6 +257,29 @@ class TopKNucleusProcessor(MultinomialProcessor):
         sorted_logits[sorted_indices_to_remove] = -1e20
         logits = torch.gather(sorted_logits, -1, sorted_indices.argsort(-1))
         return logits
+
+
+LogitsProcessorType = Literal["greedy", "multinomial", "top_k", "nucleus", "top_k_nucleus"]
+
+
+def make_logits_processor(
+    processor_type: str,
+    temperature: float = 1,
+    top_k: Optional[int] = None,
+    top_p: float = 1,
+):
+    if processor_type == "greedy":
+        return GreedyProcessor()
+    elif processor_type == "multinomial":
+        return MultinomialProcessor(temperature)
+    elif processor_type == "top_k":
+        return TopKProcessor(temperature, top_k)
+    elif processor_type == "nucleus":
+        return NucleusProcessor(temperature, top_p)
+    elif processor_type == "top_k_nucleus":
+        return TopKNucleusProcessor(temperature, top_k, top_p)
+    else:
+        raise ValueError(f"Unknown processor type: {processor_type}")
 
 
 def prune_cache(cache: Union[Tuple[Tuple[Tensor, Tensor]], DynamicCache], num_tokens_to_discard: int):

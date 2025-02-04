@@ -45,6 +45,12 @@ def main():
     parser.add_argument('--rng-deterministic', default=True, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--p', type=float, default=0.95)
     parser.add_argument('--t', type=float, default=0.2)
+    parser.add_argument(
+        "--logits_processor_type",
+        type=str,
+        default="greedy",
+        choices=["greedy", "multinomial", "nucleus"],
+    )
     parser.add_argument('--frequency_penalty', type=float, default=0)
     parser.add_argument('--max-length', type=int, default=256)
     parser.add_argument('--num-samples', type=int, default=1)
@@ -55,6 +61,7 @@ def main():
     parser.add_argument('--benchmark', default=False, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--log_spec_decode_metrics', default=False, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--use_vllm', default=True, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--use_vllm_spec_decoding', default=True, type=lambda x: (str(x).lower() == 'true'), help="Use VLLM's speculative decoding implementation. If False, use the custom impplementation. Only available if use_vllm=True.")
     parser.add_argument('--separate_tokenizer', default=False, type=lambda x: (str(x).lower() == 'true'))
     parser.add_argument('--speculative_model', type=none_or_val, choices=speculative_models, default=None)
     parser.add_argument('--num_speculative_tokens', type=lambda x: none_or_val(x, dtype=int), default=None)
@@ -78,6 +85,19 @@ def main():
 
     if not args.use_vllm and args.speculative_model is not None and args.num_samples > 1:
         raise ValueError("Sampling multiple sequences is not supported for non-VLLM models with speculative decoding.")
+
+    if (
+        not args.use_vllm
+        and args.speculative_model is None
+        and args.t == 0
+        and args.num_samples > 1
+    ):
+        raise ValueError(
+            "Sampling multiple sequences is not supported for non-VLLM models (no speculative decoding) with greedy decoding (temperature 0). Set num_samples=1 and run multiple seeds instead."
+        )
+
+    if args.use_vllm_spec_decoding and args.speculative_model is not None and not args.use_vllm:
+        raise ValueError("Cannot combine use_vllm_spec_decoding=True with use_vllm=False")
 
     # (2) preamble
 
@@ -110,33 +130,43 @@ def main():
         tokenizer = None
 
     spec_model = None
+    if spec_model_ckpt is not None and (not args.use_vllm or not args.use_vllm_spec_decoding):
+        create_model_kwargs = {"gpu_memory_utilization": 0.3}
+        create_spec_model_kwargs = {"gpu_memory_utilization": 0.4}
+    else:
+        create_model_kwargs = {}
+        create_spec_model_kwargs = {}
+
     with print_time('loading parameters'):
         model = create_model(
             ckpt=ckpt,
             fp16=args.fp16,
             use_vllm=args.use_vllm,
             tokenizer="tokenizer" if tokenizer is None else None,
-            speculative_model=spec_model_ckpt,
-            num_speculative_tokens=args.num_speculative_tokens,
+            speculative_model=spec_model_ckpt if args.use_vllm_spec_decoding else None,
+            num_speculative_tokens=args.num_speculative_tokens if args.use_vllm_spec_decoding else None,
             ngram_prompt_lookup_min=args.ngram_prompt_lookup_min,
             ngram_prompt_lookup_max=args.ngram_prompt_lookup_max,
             rope_dtype=args.rope_dtype,
             # Enable logging stats when collecting speculative decoding metrics.
             # Otherwise, disable them to speed up generation.
             disable_log_stats=not args.log_spec_decode_metrics,
+            **create_model_kwargs,
         )
+        if spec_model_ckpt is not None and (not args.use_vllm or not args.use_vllm_spec_decoding):
+            spec_model = create_model(
+                ckpt=spec_model_ckpt,
+                fp16=args.fp16,
+                use_vllm=args.use_vllm,
+                tokenizer="tokenizer" if tokenizer is None else None,
+                speculative_model=None,
+                num_speculative_tokens=None,
+                rope_dtype=args.rope_dtype,
+                **create_spec_model_kwargs,
+            )
         if not args.use_vllm:
             model = model.to(device)
-            if spec_model_ckpt is not None:
-                spec_model = create_model(
-                    ckpt=spec_model_ckpt,
-                    fp16=args.fp16,
-                    use_vllm=args.use_vllm,
-                    tokenizer="tokenizer" if tokenizer is None else None,
-                    speculative_model=None,
-                    num_speculative_tokens=None,
-                    rope_dtype=args.rope_dtype,
-                )
+            if spec_model is not None:
                 spec_model = spec_model.to(device)
 
     # (4) sanity
@@ -187,79 +217,75 @@ def main():
     if args.sample:
         RITA_perplexity = RITAPerplexity(device=device)
 
+        if tokenizer is not None:
+            pad_token_id = tokenizer.encode("<|pad|>").ids[0]
+            eos_token_id = tokenizer.encode("<|eos|>").ids[0]
+        else:
+            pad_token_id = None
+            eos_token_id = None
+
         with print_time('sampling'):
-            if args.use_vllm:
-                completions, outputs = sample_vllm(
-                    device=device,
-                    model=model,
-                    tokenizer=tokenizer,
-                    context=args.context,
-                    max_length=args.max_length,
-                    num_return_sequences=args.num_samples,
-                    top_p=args.p,
-                    temp=args.t,
-                    frequency_penalty=args.frequency_penalty,
-                )
-            else:
-                completions = sample(
-                    device=device,
-                    model=model,
-                    tokenizer=tokenizer,
-                    context=args.context,
-                    max_length=args.max_length,
-                    num_return_sequences=args.num_samples,
-                    top_p=args.p,
-                    temp=args.t,
-                    pad_token_id=tokenizer.encode("<|pad|>").ids[0],
-                    eos_token_id=tokenizer.encode("<|eos|>").ids[0],
-                    spec_model=spec_model,
-                    num_speculative_tokens=args.num_speculative_tokens,
-                )
-
-            truncations = [truncate(completion, terminals=['1', '2']) for completion in completions]
-
-            print(args.context)
-
-            save_dir = get_benchmark_results_save_dir(
-                root_dir=SAMPLES_DIR,
-                model_name=args.model,
-                use_vllm=args.use_vllm,
-                num_samples=args.num_samples,
-                max_len=args.max_length,
-                speculative_model=args.speculative_model,
-                num_speculative_tokens=args.num_speculative_tokens
+            completions = sample(
+                device=device,
+                model=model,
+                tokenizer=tokenizer,
+                context=args.context,
+                max_length=args.max_length,
+                num_return_sequences=args.num_samples,
+                top_p=args.p,
+                temp=args.t,
+                pad_token_id=pad_token_id,
+                eos_token_id=eos_token_id,
+                spec_model=spec_model,
+                num_speculative_tokens=args.num_speculative_tokens,
+                frequency_penalty=args.frequency_penalty,
+                logits_processor_type=args.logits_processor_type,
             )
-            save_dir = pathlib.Path(save_dir)
-            print("Saving to", save_dir)
-            write_to_fasta(completions, save_dir / "generations.fasta")
-            write_to_fasta(
-                truncations, save_dir / "truncated_generations.fasta"
-            )
-            with open(save_dir / "config.json", "w") as f:
-                json.dump(vars(args), f)
 
-            all_rita_ppls = []
+        truncations = [truncate(completion, terminals=['1', '2']) for completion in completions]
 
-            for (i, truncation) in enumerate(truncations):
-                rita_ppl = RITA_perplexity.calc_perplexity(truncation)
-                all_rita_ppls.append(rita_ppl)
+        print(args.context)
 
-                print()
-                print(i)
-                print(truncation, rita_ppl)
+        save_dir = get_benchmark_results_save_dir(
+            root_dir=SAMPLES_DIR,
+            model_name=args.model,
+            use_vllm=args.use_vllm,
+            num_samples=args.num_samples,
+            max_len=args.max_length,
+            speculative_model=args.speculative_model,
+            num_speculative_tokens=args.num_speculative_tokens
+        )
+        save_dir = pathlib.Path(save_dir)
+        print("Saving to", save_dir)
+        write_to_fasta(completions, save_dir / "generations.fasta")
+        write_to_fasta(
+            truncations, save_dir / "truncated_generations.fasta"
+        )
+        with open(save_dir / "config.json", "w") as f:
+            json.dump(vars(args), f)
 
-            with open(save_dir / "rita_perplexity.json", "w") as f:
-                json.dump(all_rita_ppls, f)
+        all_rita_ppls = []
 
-            if args.log_to_wandb:
-                import wandb
-                wandb.init(project="progen2-sampling",config=vars(args),entity="amyxlu")
-                wandb.log({
-                    "rita_perplexity_mean": np.mean(all_rita_ppls),
-                    "rita_perplexity_std": np.std(all_rita_ppls),
-                    "rita_perplexity_hist": wandb.Histogram(sequence=all_rita_ppls),
-                })
-                wandb.finish()
+        for (i, truncation) in enumerate(truncations):
+            rita_ppl = RITA_perplexity.calc_perplexity(truncation)
+            all_rita_ppls.append(rita_ppl)
+
+            print()
+            print(i)
+            print(truncation, rita_ppl)
+
+        with open(save_dir / "rita_perplexity.json", "w") as f:
+            json.dump(all_rita_ppls, f)
+
+        if args.log_to_wandb:
+            import wandb
+            wandb.init(project="progen2-sampling",config=vars(args),entity="amyxlu")
+            wandb.log({
+                "rita_perplexity_mean": np.mean(all_rita_ppls),
+                "rita_perplexity_std": np.std(all_rita_ppls),
+                "rita_perplexity_hist": wandb.Histogram(sequence=all_rita_ppls),
+            })
+            wandb.finish()
 
     # (6) Spec decoding metrics
     if args.log_spec_decode_metrics:
