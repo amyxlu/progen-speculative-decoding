@@ -16,6 +16,8 @@ from progen.sampling import compute_prompt_cross_entropy_vllm, sample, sample_vl
 from progen.utils import create_model, create_tokenizer_custom, set_env, set_seed, print_time, get_benchmark_results_save_dir, write_to_fasta
 import logger as logger_utils
 
+from progen.modeling_progen import ProGenForCausalLM
+
 
 TIME_BENCHMARK_DIR = "benchmark"
 SPEC_DECODE_METRICS_DIR = "spec_decode_metrics"
@@ -216,6 +218,16 @@ def main():
 
     if args.sample:
         RITA_perplexity = RITAPerplexity(device=device)
+        progen_perplexity = RITAPerplexity(
+            model=ProGenForCausalLM.from_pretrained(
+                "progen2-small",
+                revision="float16",
+                torch_dtype=torch.float16,
+                low_cpu_mem_usage=True,
+            ),
+            device=device,
+        )
+        perplexity_models = {"progen2-small": progen_perplexity, "lightonai/RITA_xl": RITA_perplexity}
 
         if tokenizer is not None:
             pad_token_id = tokenizer.encode("<|pad|>").ids[0]
@@ -264,28 +276,32 @@ def main():
         with open(save_dir / "config.json", "w") as f:
             json.dump(vars(args), f)
 
-        all_rita_ppls = []
+        perplexity_results = {}
 
-        for (i, truncation) in enumerate(truncations):
-            rita_ppl = RITA_perplexity.calc_perplexity(truncation)
-            all_rita_ppls.append(rita_ppl)
+        for perplexity_model_name, perplexity_model in perplexity_models.items():
+            print(f"Calculating perplexity with {perplexity_model_name}")
+            ppls = []
+            for (i, truncation) in enumerate(truncations):
+                rita_ppl = perplexity_model.calc_perplexity(truncation)
+                ppls.append(rita_ppl)
 
-            print()
-            print(i)
-            print(truncation, rita_ppl)
+                print()
+                print(i)
+                print(truncation, rita_ppl)
+            perplexity_results[perplexity_model_name] = ppls
 
-        with open(save_dir / "rita_perplexity.json", "w") as f:
-            json.dump(all_rita_ppls, f)
+        with open(save_dir / "perplexity_results.json", "w") as f:
+            json.dump(perplexity_results, f)
 
-        if args.log_to_wandb:
-            import wandb
-            wandb.init(project="progen2-sampling",config=vars(args),entity="amyxlu")
-            wandb.log({
-                "rita_perplexity_mean": np.mean(all_rita_ppls),
-                "rita_perplexity_std": np.std(all_rita_ppls),
-                "rita_perplexity_hist": wandb.Histogram(sequence=all_rita_ppls),
-            })
-            wandb.finish()
+        # if args.log_to_wandb:
+        #     import wandb
+        #     wandb.init(project="progen2-sampling",config=vars(args),entity="amyxlu")
+        #     wandb.log({
+        #         "rita_perplexity_mean": np.mean(all_rita_ppls),
+        #         "rita_perplexity_std": np.std(all_rita_ppls),
+        #         "rita_perplexity_hist": wandb.Histogram(sequence=all_rita_ppls),
+        #     })
+        #     wandb.finish()
 
     # (6) Spec decoding metrics
     if args.log_spec_decode_metrics:

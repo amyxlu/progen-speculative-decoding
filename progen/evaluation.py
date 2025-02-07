@@ -25,7 +25,10 @@ def to_tensor(x, device=None, dtype=None):
 class RITAPerplexity:
     def __init__(self, model="lightonai/RITA_xl", device="cuda"):
         self.device = device
-        self.model = AutoModelForCausalLM.from_pretrained(model, trust_remote_code=True)
+        if isinstance(model, str):
+            self.model = AutoModelForCausalLM.from_pretrained(model, trust_remote_code=True)
+        else:
+            self.model = model
         self.model.to(self.device)
         self.model.eval().requires_grad_(False)
         self.tokenizer = AutoTokenizer.from_pretrained(model)
