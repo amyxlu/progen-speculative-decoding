@@ -220,7 +220,7 @@ def main():
         RITA_perplexity = RITAPerplexity(device=device)
         progen_perplexity = RITAPerplexity(
             model=ProGenForCausalLM.from_pretrained(
-                "progen2-small",
+                "./checkpoints/progen2-small",
                 revision="float16",
                 torch_dtype=torch.float16,
                 low_cpu_mem_usage=True,
