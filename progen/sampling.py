@@ -40,8 +40,10 @@ def prepare_input_for_model(input, model, tokenizer, device):
         return prepare_input_for_non_vllm_model(input, tokenizer, device)
 
 
-def process_outputs_from_vllm_model(outputs, tokenizer):
+def process_outputs_from_vllm_model(outputs, tokenizer, model=None):
     """Process output from a VLLM model."""
+    if tokenizer is None and type(outputs[0]) == int:
+        return model.get_tokenizer().decode(outputs)
     assert len(outputs) == 1
     if tokenizer is None:
         return [output.text for output in outputs[0].outputs]
@@ -66,7 +68,7 @@ def process_outputs_from_non_vllm_model(outputs, tokenizer):
 def process_outputs_from_model(outputs, model, tokenizer):
     """Process output from the model."""
     if isinstance(model, LLM):
-        return process_outputs_from_vllm_model(outputs, tokenizer)
+        return process_outputs_from_vllm_model(outputs, tokenizer, model)
     else:
         return process_outputs_from_non_vllm_model(outputs, tokenizer)
 

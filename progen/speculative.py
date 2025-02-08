@@ -392,7 +392,8 @@ def speculative_generate_vllm(
 
         # TODO: check if this is correct
         # Only adjust the distribution from Mp if we are not at the last position.
-        if current_position < total_len - 1:
+        # Note that made this + n and removed -1 to not have issues at the end of the sequence.
+        if current_position + n < total_len:
             # adjust the distribution from Mp
             if n == corrected_gamma:
                 # TODO: check if the indexing should be -1 or -2
