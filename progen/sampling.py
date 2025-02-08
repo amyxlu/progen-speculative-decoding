@@ -100,23 +100,19 @@ def make_generate_fn(
                 return model.generate(input_ids, sampling_params)
         else:
             # VLLM model with custom (non-VLLM-based) speculative decoding.
-            # TODO: Implement this. Custom speculative decoding does not support VLLM models yet.
-            raise NotImplementedError(
-                "Custom speculative decoding does not support VLLM models yet."
-            )
-
             def generate(input_ids):
-                tokens, acceptance_rate = speculative.speculative_generate(
+                token_ids, acceptance_rate = speculative.speculative_generate_vllm(
                     inputs=input_ids,
                     drafter=spec_model,
                     target=model,
                     gamma=num_speculative_tokens,
-                    logits_processor=logits_processor,
+                    # TODO: Implement this.
+                    # logits_processor=logits_processor,
                     max_gen_len=max_length,
                     eos_tokens_id=eos_token_id,
                     pad_token_id=pad_token_id,
                 )
-                return [tokens]
+                return token_ids
 
     else:
         assert (

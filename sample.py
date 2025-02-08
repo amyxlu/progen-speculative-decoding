@@ -218,13 +218,16 @@ def main():
 
     if args.sample:
         RITA_perplexity = RITAPerplexity(device=device)
-        progen_perplexity = RITAPerplexity(
-            model=ProGenForCausalLM.from_pretrained(
+        progen_for_perplexity = ProGenForCausalLM.from_pretrained(
                 "./checkpoints/progen2-small",
                 revision="float16",
                 torch_dtype=torch.float16,
                 low_cpu_mem_usage=True,
-            ),
+            )
+        tokenizer_for_perplexity = create_tokenizer_custom(file='tokenizer.json')
+        progen_perplexity = RITAPerplexity(
+            model=progen_for_perplexity,
+            tokenizer=tokenizer_for_perplexity,
             device=device,
         )
         perplexity_models = {"progen2-small": progen_perplexity, "lightonai/RITA_xl": RITA_perplexity}
